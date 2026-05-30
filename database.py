@@ -15,3 +15,15 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 class Base(DeclarativeBase):
     """Parent class that all ORM models inherit from."""
     pass
+
+
+def get_db():
+    """Yield a database session for one request, then close it.
+
+    Used as a FastAPI dependency so each request gets its own session.
+    """
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
