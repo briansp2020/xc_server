@@ -4,7 +4,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict
 
 
-# --- Incoming payload (mirrors docs/SERVER_SCHEMA.md) ---------------------------
+# --- Incoming payload (mirrors docs/SERVER_SCHEMA.md: "health_sync") ----------
 
 class NumericSample(BaseModel):
     """A point-in-time reading (heart rate, speed, SpO2, ...)."""
@@ -17,7 +17,7 @@ class NumericSample(BaseModel):
 
 
 class IntervalSample(BaseModel):
-    """A value measured over a span (step counts, distance deltas, calorie buckets)."""
+    """A value measured over a span (steps, distance, calories, sleep stages)."""
     uuid: str | None = None
     start: datetime
     end: datetime
@@ -27,42 +27,36 @@ class IntervalSample(BaseModel):
     recording_method: str | None = None
 
 
-class WorkoutRoutePoint(BaseModel):
-    time: datetime
-    latitude: float
-    longitude: float
-    altitude_meters: float | None = None
-    horizontal_accuracy_meters: float | None = None
-    vertical_accuracy_meters: float | None = None
-
-
-class WorkoutRoute(BaseModel):
-    points: list[WorkoutRoutePoint]
-
-
 class Workout(BaseModel):
+    """An explicit ExerciseSessionRecord the recording app wrote (summary only;
+    raw samples now arrive as top-level streams, not nested here)."""
     source_uuid: str
     source_app: str
     source_device_id: str | None = None
-    source_name: str | None = None
     activity_type: str
     recording_method: str | None = None
     start_time: datetime
     end_time: datetime
     duration_seconds: int
     total_distance_meters: int | None = None
-    total_distance_unit: str | None = None
     total_energy_kcal: int | None = None
-    total_energy_unit: str | None = None
     total_steps: int | None = None
-    total_steps_unit: str | None = None
 
+
+class HealthSync(BaseModel):
+    # Unknown `type` values are rejected with 422 (see doc "Versioning").
+    type: Literal["health_sync"]
+    athlete_id: int
+    client_version: str | None = None
+    uploaded_at: datetime
+    source_platform: str
+    window_start: datetime
+    window_end: datetime
+
+    workouts: list[Workout] = []
+
+    # Point-in-time streams.
     heart_rate_samples: list[NumericSample] = []
-    step_deltas: list[IntervalSample] = []
-    distance_deltas: list[IntervalSample] = []
-    total_calorie_samples: list[IntervalSample] = []
-    active_energy_samples: list[IntervalSample] = []
-    basal_energy_samples: list[IntervalSample] = []
     speed_samples: list[NumericSample] = []
     hrv_rmssd_samples: list[NumericSample] = []
     resting_heart_rate_samples: list[NumericSample] = []
@@ -70,21 +64,22 @@ class Workout(BaseModel):
     blood_oxygen_samples: list[NumericSample] = []
     skin_temperature_samples: list[NumericSample] = []
     body_temperature_samples: list[NumericSample] = []
+
+    # Interval streams.
+    step_samples: list[IntervalSample] = []
+    distance_samples: list[IntervalSample] = []
+    total_calorie_samples: list[IntervalSample] = []
+    active_energy_samples: list[IntervalSample] = []
+    basal_energy_samples: list[IntervalSample] = []
     flights_climbed_samples: list[IntervalSample] = []
     activity_intensity_samples: list[IntervalSample] = []
-    workout_route: WorkoutRoute | None = None
 
-
-class WorkoutUpload(BaseModel):
-    # Unknown `type` values are rejected with 422 (see doc "Versioning").
-    type: Literal["workout_upload"]
-    athlete_id: int
-    client_version: str | None = None
-    uploaded_at: datetime
-    source_platform: str
-    window_start: datetime
-    window_end: datetime
-    workouts: list[Workout]
+    # Sleep streams.
+    sleep_sessions: list[IntervalSample] = []
+    sleep_deep_samples: list[IntervalSample] = []
+    sleep_rem_samples: list[IntervalSample] = []
+    sleep_light_samples: list[IntervalSample] = []
+    sleep_awake_samples: list[IntervalSample] = []
 
 
 # --- Outgoing responses --------------------------------------------------------
@@ -104,14 +99,14 @@ class WorkoutSummary(BaseModel):
     total_distance_meters: int | None
     total_energy_kcal: int | None
     total_steps: int | None
-    avg_heart_rate: int | None  # derived from heart_rate_samples (Workout.avg_heart_rate)
-    max_heart_rate: int | None  # derived from heart_rate_samples (Workout.max_heart_rate)
+    avg_heart_rate: int | None  # derived from sliced heart_rate_samples
+    max_heart_rate: int | None  # derived from sliced heart_rate_samples
     uploaded_at: datetime
     client_version: str | None
 
 
 class WorkoutDetail(WorkoutSummary):
-    """A single workout including the full raw payload (all samples)."""
+    """A single workout including the streams sliced to its time window."""
     raw_payload: dict[str, Any]
 
 

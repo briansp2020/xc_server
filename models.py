@@ -6,6 +6,25 @@ from sqlalchemy.orm import Mapped, mapped_column
 from database import Base
 
 
+class Sync(Base):
+    """One health_sync upload, stored whole so the detection algorithm can be
+    re-run against old data later without the client re-uploading."""
+    __tablename__ = "syncs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    athlete_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    uploaded_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    window_start: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    window_end: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    client_version: Mapped[str | None] = mapped_column(String, nullable=True)
+    source_platform: Mapped[str | None] = mapped_column(String, nullable=True)
+    raw_payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+    __table_args__ = (
+        Index("ix_syncs_athlete_uploaded", "athlete_id", "uploaded_at"),
+    )
+
+
 class Workout(Base):
     __tablename__ = "workouts"
 
@@ -26,8 +45,9 @@ class Workout(Base):
     total_energy_kcal: Mapped[int | None] = mapped_column(Integer, nullable=True)
     total_steps: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
-    # The entire Workout JSON object (every sample array) for replay and so the
-    # typed columns above can be re-derived after a schema change.
+    # The global streams (HR, steps, distance, ...) sliced to this workout's
+    # time window at ingest, so the dashboard can chart per-workout data. The
+    # full untrimmed payload lives on the Sync row for re-processing.
     raw_payload: Mapped[dict] = mapped_column(JSON, nullable=False)
 
     # From the upload envelope.

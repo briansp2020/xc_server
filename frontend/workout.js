@@ -19,11 +19,11 @@ function fmtDuration(sec) {
   return `${m}m ${String(s).padStart(2, "0")}s`;
 }
 
-// Friendly names for the raw_payload sample arrays.
+// Friendly names for the sliced stream arrays on a workout's raw_payload.
 const SAMPLE_LABELS = {
   heart_rate_samples: "Heart rate",
-  step_deltas: "Steps",
-  distance_deltas: "Distance",
+  step_samples: "Steps",
+  distance_samples: "Distance",
   total_calorie_samples: "Calories",
   active_energy_samples: "Active energy",
   basal_energy_samples: "Basal energy",

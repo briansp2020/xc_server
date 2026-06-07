@@ -10,7 +10,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from database import Base, engine, get_db
-from models import Workout
+from models import Sync, Workout
 import schemas
 
 FRONTEND_DIR = Path(__file__).parent / "frontend"
@@ -39,11 +39,53 @@ _UPSERT_COLUMNS = [
     "raw_payload", "uploaded_at", "client_version",
 ]
 
+# Streams sliced onto each workout for the dashboard. NumericSamples are placed
+# by their `time`, IntervalSamples by their `start`. Sleep streams are excluded
+# (they don't belong to a workout window).
+_NUMERIC_STREAMS = [
+    "heart_rate_samples", "speed_samples", "hrv_rmssd_samples",
+    "resting_heart_rate_samples", "respiratory_rate_samples",
+    "blood_oxygen_samples", "skin_temperature_samples", "body_temperature_samples",
+]
+_INTERVAL_STREAMS = [
+    "step_samples", "distance_samples", "total_calorie_samples",
+    "active_energy_samples", "basal_energy_samples",
+    "flights_climbed_samples", "activity_intensity_samples",
+]
+
+
+def _slice_streams(payload: schemas.HealthSync, start, end) -> dict:
+    """Return the global streams trimmed to [start, end] for one workout."""
+    sliced: dict[str, list] = {}
+    for name in _NUMERIC_STREAMS:
+        sel = [s.model_dump(mode="json") for s in getattr(payload, name)
+               if start <= s.time <= end]
+        if sel:
+            sliced[name] = sel
+    for name in _INTERVAL_STREAMS:
+        sel = [s.model_dump(mode="json") for s in getattr(payload, name)
+               if start <= s.start <= end]
+        if sel:
+            sliced[name] = sel
+    return sliced
+
 
 @app.post("/workouts", status_code=201)
-def upload_workouts(payload: schemas.WorkoutUpload, db: Session = Depends(get_db)):
-    # Dedup within the batch (last one wins) so a single INSERT can't hit the
-    # same source_uuid twice, which SQLite's upsert rejects.
+def ingest_sync(payload: schemas.HealthSync, db: Session = Depends(get_db)):
+    # 1. Persist the whole sync untouched, for replay / later session detection.
+    db.add(Sync(
+        athlete_id=payload.athlete_id,
+        uploaded_at=payload.uploaded_at,
+        window_start=payload.window_start,
+        window_end=payload.window_end,
+        client_version=payload.client_version,
+        source_platform=payload.source_platform,
+        raw_payload=payload.model_dump(mode="json"),
+    ))
+
+    # 2. Upsert workout summaries, slicing the global streams to each window so
+    #    the dashboard/detail view keep working. Dedup within the batch (last
+    #    wins) so a single INSERT can't hit the same source_uuid twice.
     rows_by_uuid: dict[str, dict] = {}
     for w in payload.workouts:
         rows_by_uuid[w.source_uuid] = {
@@ -58,7 +100,7 @@ def upload_workouts(payload: schemas.WorkoutUpload, db: Session = Depends(get_db
             "total_distance_meters": w.total_distance_meters,
             "total_energy_kcal": w.total_energy_kcal,
             "total_steps": w.total_steps,
-            "raw_payload": w.model_dump(mode="json"),  # full workout, JSON-safe
+            "raw_payload": _slice_streams(payload, w.start_time, w.end_time),
             "uploaded_at": payload.uploaded_at,
             "client_version": payload.client_version,
         }
@@ -71,9 +113,14 @@ def upload_workouts(payload: schemas.WorkoutUpload, db: Session = Depends(get_db
             set_={col: getattr(stmt.excluded, col) for col in _UPSERT_COLUMNS},
         )
         db.execute(stmt)
-        db.commit()
 
-    return {"received": len(rows), "athlete_id": payload.athlete_id}
+    db.commit()
+
+    return {
+        "received_workouts": len(rows),
+        "received_hr_samples": len(payload.heart_rate_samples),
+        "received_step_samples": len(payload.step_samples),
+    }
 
 
 @app.get("/workouts", response_model=list[schemas.WorkoutSummary])
