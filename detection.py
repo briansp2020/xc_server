@@ -80,10 +80,26 @@ def detect_sessions(hr_samples, step_samples,
         if s.get("source"):
             src_by_min.setdefault(m, set()).add(s["source"])
 
+    # Steps come from multiple sources (Fitbit, Android, Health Connect's own
+    # aggregator) that redundantly count the *same* steps, and records can
+    # overlap in time. Summing them inflates cadence (~2x). So: use a single
+    # primary source and take the largest record per minute (which also
+    # neutralizes overlapping within-source records).
+    #
+    # The primary is the source with the MOST records — the continuous wrist
+    # tracker (e.g. Fitbit, ~1 record/min). Picking by total steps instead would
+    # wrongly select a coarse all-day phone counter that doesn't cover workouts.
+    src_counts: dict = {}
+    for s in step_samples:
+        src_counts[s.get("source")] = src_counts.get(s.get("source"), 0) + 1
+    primary_source = max(src_counts, key=src_counts.get) if src_counts else None
+
     steps_by_min: dict[datetime, float] = {}
     for s in step_samples:
+        if s.get("source") != primary_source:
+            continue
         m = _floor_minute(parse_utc(s["start"]))
-        steps_by_min[m] = steps_by_min.get(m, 0) + (s.get("value") or 0)
+        steps_by_min[m] = max(steps_by_min.get(m, 0), s.get("value") or 0)
 
     # 2. Active minutes: elevated HR AND walking-or-faster cadence.
     active = sorted(

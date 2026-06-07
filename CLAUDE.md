@@ -77,11 +77,17 @@ recorded/detected badges and a per-session HR chart (`session.html`).
 
 Bump `DETECTION_VERSION` and re-run `/detect` when the algorithm changes.
 
-**Known tuning gaps (v1):** cadence is inflated when steps come from multiple
-sources (Fitbit + Android + Health Connect all count) — dedup step sources before
-the run/walk decision. HR threshold is a fixed default (no per-athlete
+**Step source dedup:** steps arrive from multiple sources (Fitbit + Android +
+Health Connect) that redundantly count the same steps with overlapping records —
+summing them roughly doubled cadence. Detection picks one primary source (the one
+with the MOST records — the continuous wrist tracker) and takes the largest record
+per minute. Picking by total steps is wrong: a coarse all-day phone counter can
+have the highest total but not cover workouts.
+
+**Known tuning gaps (v1):** HR threshold is a fixed default (no per-athlete
 resting/max yet). 5-sample HR smoothing from the doc isn't applied (minute-median
-already smooths).
+already smooths). Detected windows can extend past the real workout (gap-merge
+bridges adjacent walking), which dilutes a run's average cadence.
 
 ## Not yet built (deferred, described in the schema doc)
 
