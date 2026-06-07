@@ -105,6 +105,7 @@ class WorkoutSummary(BaseModel):
     total_energy_kcal: int | None
     total_steps: int | None
     avg_heart_rate: int | None  # derived from heart_rate_samples (Workout.avg_heart_rate)
+    max_heart_rate: int | None  # derived from heart_rate_samples (Workout.max_heart_rate)
     uploaded_at: datetime
     client_version: str | None
 

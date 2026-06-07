@@ -39,10 +39,22 @@ class Workout(Base):
     )
 
     @property
+    def _hr_values(self) -> list[float]:
+        samples = (self.raw_payload or {}).get("heart_rate_samples") or []
+        return [s["value"] for s in samples if s.get("value") is not None]
+
+    @property
     def avg_heart_rate(self) -> int | None:
         """Mean BPM derived from the raw heart_rate_samples (None if none)."""
-        samples = (self.raw_payload or {}).get("heart_rate_samples") or []
-        values = [s["value"] for s in samples if s.get("value") is not None]
+        values = self._hr_values
         if not values:
             return None
         return round(sum(values) / len(values))
+
+    @property
+    def max_heart_rate(self) -> int | None:
+        """Peak BPM derived from the raw heart_rate_samples (None if none)."""
+        values = self._hr_values
+        if not values:
+            return None
+        return round(max(values))

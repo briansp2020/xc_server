@@ -32,7 +32,7 @@ async function loadWorkouts() {
     return;
   }
   tbody.innerHTML = workouts.map((w) => `
-    <tr>
+    <tr class="clickable" onclick="location.href='/workout.html?uuid=${encodeURIComponent(w.source_uuid)}'">
       <td>${fmtDate(w.start_time)}</td>
       <td>${w.activity_type}</td>
       <td class="num">${fmtDuration(w.duration_seconds)}</td>
