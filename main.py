@@ -259,6 +259,17 @@ def get_session(session_id: int, db: Session = Depends(get_db)):
     return session
 
 
+class NoCacheStaticFiles(StaticFiles):
+    """Serve static files with Cache-Control: no-cache so browsers always
+    revalidate (via ETag) instead of silently serving a stale cached copy —
+    important while the dashboard JS/CSS is changing."""
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 # Serve the dashboard. Mounted LAST so all API routes above take precedence;
 # "/" returns frontend/index.html (html=True).
-app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
+app.mount("/", NoCacheStaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
