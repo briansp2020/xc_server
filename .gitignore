@@ -11,3 +11,6 @@ __pycache__/
 
 # Environment variables / secrets
 .env
+
+# Schema docs symlinked in from the phone-app repo (symlink, not a real dir)
+docs
