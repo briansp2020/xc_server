@@ -3,13 +3,27 @@
 
 const uuid = new URLSearchParams(location.search).get("uuid");
 
+const PT = "America/Los_Angeles";  // show all times in Pacific (PST/PDT)
+
+// DB datetime columns come back without a timezone; treat them as UTC so they
+// aren't misread as browser-local. Sample times already carry Z/offset.
+function toDate(iso) {
+  return new Date(/[zZ]|[+-]\d\d:?\d\d$/.test(iso) ? iso : iso + "Z");
+}
+
 const fmtKm = (m) => (m == null ? "—" : (m / 1000).toFixed(2) + " km");
 const fmtBpm = (b) => (b == null ? "—" : b + " bpm");
 
 function fmtDateTime(iso) {
-  return new Date(iso).toLocaleString(undefined, {
-    dateStyle: "medium", timeStyle: "short",
+  return toDate(iso).toLocaleString("en-US", {
+    year: "numeric", month: "short", day: "numeric",
+    hour: "numeric", minute: "2-digit",
+    timeZone: PT, timeZoneName: "short",
   });
+}
+
+function fmtTime(iso) {
+  return toDate(iso).toLocaleTimeString("en-US", { timeZone: PT });
 }
 function fmtDuration(sec) {
   const h = Math.floor(sec / 3600);
@@ -68,7 +82,7 @@ function renderHrChart(raw) {
   new Chart(document.getElementById("hrChart"), {
     type: "line",
     data: {
-      labels: hr.map((s) => new Date(s.time).toLocaleTimeString()),
+      labels: hr.map((s) => fmtTime(s.time)),
       datasets: [{
         label: "bpm",
         data: hr.map((s) => s.value),

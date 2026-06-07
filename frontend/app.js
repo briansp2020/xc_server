@@ -1,12 +1,20 @@
 // The dashboard is a pure API client: it only fetches the JSON endpoints,
 // never touches the database directly.
 
+const PT = "America/Los_Angeles";  // show all times in Pacific (PST/PDT)
+
+// DB datetime columns come back without a timezone; treat them as UTC so they
+// aren't misread as browser-local.
+function toDate(iso) {
+  return new Date(/[zZ]|[+-]\d\d:?\d\d$/.test(iso) ? iso : iso + "Z");
+}
+
 const fmtKm = (m) => (m == null ? "—" : (m / 1000).toFixed(2) + " km");
 const fmtHr = (bpm) => (bpm == null ? "—" : bpm + " bpm");
 
 function fmtDate(iso) {
-  return new Date(iso).toLocaleDateString(undefined, {
-    year: "numeric", month: "short", day: "numeric",
+  return toDate(iso).toLocaleDateString("en-US", {
+    year: "numeric", month: "short", day: "numeric", timeZone: PT,
   });
 }
 
