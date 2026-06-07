@@ -37,3 +37,12 @@ class Workout(Base):
     __table_args__ = (
         Index("ix_workouts_athlete_start", "athlete_id", "start_time"),
     )
+
+    @property
+    def avg_heart_rate(self) -> int | None:
+        """Mean BPM derived from the raw heart_rate_samples (None if none)."""
+        samples = (self.raw_payload or {}).get("heart_rate_samples") or []
+        values = [s["value"] for s in samples if s.get("value") is not None]
+        if not values:
+            return None
+        return round(sum(values) / len(values))

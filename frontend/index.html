@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>XC Training Dashboard</title>
+  <link rel="stylesheet" href="/style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <header><h1>XC Training Dashboard</h1></header>
+  <main>
+    <section class="card">
+      <h2>Weekly distance</h2>
+      <canvas id="weeklyChart" height="120"></canvas>
+      <p id="chartEmpty" class="muted" hidden>No distance data yet.</p>
+    </section>
+
+    <section class="card">
+      <h2>Workouts</h2>
+      <table id="workoutsTable">
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Type</th>
+            <th class="num">Duration</th>
+            <th class="num">Distance</th>
+            <th class="num">Avg HR</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td colspan="5" class="muted">Loading&hellip;</td></tr>
+        </tbody>
+      </table>
+    </section>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>

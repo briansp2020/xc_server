@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
@@ -104,6 +104,7 @@ class WorkoutSummary(BaseModel):
     total_distance_meters: int | None
     total_energy_kcal: int | None
     total_steps: int | None
+    avg_heart_rate: int | None  # derived from heart_rate_samples (Workout.avg_heart_rate)
     uploaded_at: datetime
     client_version: str | None
 
@@ -111,3 +112,9 @@ class WorkoutSummary(BaseModel):
 class WorkoutDetail(WorkoutSummary):
     """A single workout including the full raw payload (all samples)."""
     raw_payload: dict[str, Any]
+
+
+class WeeklyDistance(BaseModel):
+    """Total distance summed per ISO week (Monday), for the dashboard chart."""
+    week_start: date  # the Monday of that week
+    total_distance_meters: float

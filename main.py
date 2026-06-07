@@ -1,6 +1,10 @@
+from collections import defaultdict
 from contextlib import asynccontextmanager
+from datetime import date, timedelta
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
@@ -8,6 +12,8 @@ from sqlalchemy.orm import Session
 from database import Base, engine, get_db
 from models import Workout
 import schemas
+
+FRONTEND_DIR = Path(__file__).parent / "frontend"
 
 
 @asynccontextmanager
@@ -20,8 +26,8 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 
-@app.get("/")
-def read_root():
+@app.get("/health")
+def health():
     return {"status": "ok"}
 
 
@@ -78,9 +84,33 @@ def list_workouts(athlete_id: int | None = None, db: Session = Depends(get_db)):
     return db.scalars(query).all()
 
 
+@app.get("/stats/weekly", response_model=list[schemas.WeeklyDistance])
+def weekly_distance(athlete_id: int | None = None, db: Session = Depends(get_db)):
+    # Only the two columns the chart needs — avoids loading the large raw_payload.
+    query = select(Workout.start_time, Workout.total_distance_meters)
+    if athlete_id is not None:
+        query = query.where(Workout.athlete_id == athlete_id)
+
+    totals: dict[date, float] = defaultdict(float)
+    for start_time, distance in db.execute(query):
+        d = start_time.date()
+        monday = d - timedelta(days=d.weekday())  # ISO week start
+        totals[monday] += distance or 0
+
+    return [
+        schemas.WeeklyDistance(week_start=wk, total_distance_meters=totals[wk])
+        for wk in sorted(totals)
+    ]
+
+
 @app.get("/workouts/{source_uuid}", response_model=schemas.WorkoutDetail)
 def get_workout(source_uuid: str, db: Session = Depends(get_db)):
     workout = db.get(Workout, source_uuid)
     if workout is None:
         raise HTTPException(status_code=404, detail="Workout not found")
     return workout
+
+
+# Serve the dashboard. Mounted LAST so all API routes above take precedence;
+# "/" returns frontend/index.html (html=True).
+app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
