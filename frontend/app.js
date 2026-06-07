@@ -41,6 +41,32 @@ async function loadWorkouts() {
     </tr>`).join("");
 }
 
+async function loadSessions() {
+  const tbody = document.querySelector("#sessionsTable tbody");
+  const sessions = await getJSON("/sessions");  // newest-first
+  if (!sessions.length) {
+    tbody.innerHTML = `<tr><td colspan="7" class="muted">No sessions detected yet.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = sessions.map((s) => {
+    const recorded = !!s.matched_workout_uuid;
+    const activity = s.matched_activity_type || s.inferred_activity || "—";
+    const badge = recorded
+      ? `<span class="badge badge-recorded">recorded</span>`
+      : `<span class="badge badge-detected">detected</span>`;
+    return `
+    <tr class="clickable" onclick="location.href='/session.html?id=${s.id}'">
+      <td>${fmtDate(s.start_time)}</td>
+      <td>${activity}</td>
+      <td class="num">${fmtDuration(s.duration_seconds)}</td>
+      <td class="num">${fmtKm(s.total_distance_meters)}</td>
+      <td class="num">${fmtHr(s.avg_hr)}</td>
+      <td class="num">${fmtHr(s.peak_hr)}</td>
+      <td>${badge}</td>
+    </tr>`;
+  }).join("");
+}
+
 async function loadWeeklyChart() {
   const weeks = await getJSON("/stats/weekly");
   const canvas = document.getElementById("weeklyChart");
@@ -73,7 +99,7 @@ async function loadWeeklyChart() {
 
 (async () => {
   try {
-    await Promise.all([loadWorkouts(), loadWeeklyChart()]);
+    await Promise.all([loadSessions(), loadWorkouts(), loadWeeklyChart()]);
   } catch (err) {
     console.error("Dashboard failed to load:", err);
     document.querySelector("#workoutsTable tbody").innerHTML =

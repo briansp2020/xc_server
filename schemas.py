@@ -114,3 +114,30 @@ class WeeklyDistance(BaseModel):
     """Total distance summed per ISO week (Monday), for the dashboard chart."""
     week_start: date  # the Monday of that week
     total_distance_meters: float
+
+
+class SessionSummary(BaseModel):
+    """A detected exercise session (output of the detection algorithm)."""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    athlete_id: int
+    start_time: datetime
+    end_time: datetime
+    duration_seconds: int
+    peak_hr: int | None
+    avg_hr: int | None
+    total_steps: int | None
+    avg_steps_per_min: float | None
+    total_distance_meters: int | None
+    inferred_activity: str | None
+    matched_workout_uuid: str | None
+    matched_activity_type: str | None
+    hr_coverage_pct: float | None
+    hr_source_count: int | None
+    detection_version: str
+
+
+class SessionDetail(SessionSummary):
+    """A detected session including its sliced streams (for the detail chart)."""
+    raw_payload: dict[str, Any]

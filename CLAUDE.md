@@ -64,12 +64,30 @@ against a built JSON payload (see how it's done in conversation history): POST a
 sample, then GET the endpoints and assert counts/values. A headless screenshot of
 the dashboard via Windows Chrome confirms the frontend renders.
 
+## Session detection
+
+`detection.py` implements the schema doc's algorithm (minute-grid HR+steps →
+threshold → gap-merge → ≥5-min filter → run/walk by cadence) as pure functions.
+`run_detection_for_sync` in `main.py` runs it over a sync's streams, matches each
+session to overlapping explicit workouts, and writes `detected_sessions`
+(replacing the athlete's rows). It runs automatically at ingest and via
+`POST /detect` (reprocess each athlete's latest stored sync — no re-upload).
+`GET /sessions` + `/sessions/{id}` serve them; the dashboard shows them with
+recorded/detected badges and a per-session HR chart (`session.html`).
+
+Bump `DETECTION_VERSION` and re-run `/detect` when the algorithm changes.
+
+**Known tuning gaps (v1):** cadence is inflated when steps come from multiple
+sources (Fitbit + Android + Health Connect all count) — dedup step sources before
+the run/walk decision. HR threshold is a fixed default (no per-athlete
+resting/max yet). 5-sample HR smoothing from the doc isn't applied (minute-median
+already smooths).
+
 ## Not yet built (deferred, described in the schema doc)
 
-- **Session detection** (`detected_sessions` + the algorithm) — turn raw HR/step
-  streams into sessions when the app didn't write an `ExerciseSessionRecord`.
-  Store a re-run endpoint so existing `syncs` can be reprocessed without re-upload.
 - Typed per-sample tables (`heart_rate_samples`, `interval_samples`).
+- Per-athlete resting/max HR profiles to tune the detection threshold.
+- Detection across multiple syncs (currently uses the latest sync per athlete).
 - Auth (replace `athlete_id` with a token-derived identity), GPS via Strava OAuth.
 
 ## Commits

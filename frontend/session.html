@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Session &middot; XC Training</title>
+  <link rel="stylesheet" href="/style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <header><h1>XC Training Dashboard</h1></header>
+  <main>
+    <a class="back" href="/">&larr; Back to dashboard</a>
+
+    <section class="card" id="detail">
+      <p class="muted">Loading&hellip;</p>
+    </section>
+
+    <section class="card" id="hrCard" hidden>
+      <h2>Heart rate</h2>
+      <canvas id="hrChart" height="140"></canvas>
+      <p id="hrEmpty" class="muted" hidden>No heart-rate samples for this session.</p>
+    </section>
+
+    <section class="card" id="samplesCard" hidden>
+      <h2>Data available</h2>
+      <div class="chips" id="chips"></div>
+    </section>
+  </main>
+  <script src="/session.js"></script>
+</body>
+</html>

@@ -105,6 +105,16 @@ tbody tr.clickable { cursor: pointer; }
   font-variant-numeric: tabular-nums;
 }
 
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.badge-recorded { background: #e6f0ff; color: #1b4fb8; }
+.badge-detected { background: #fff0e6; color: #b85a1b; }
+
 .chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .chip {
   background: var(--bg);

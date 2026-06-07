@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, Index, Integer, String
+from sqlalchemy import JSON, DateTime, Float, Index, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from database import Base
@@ -78,3 +78,40 @@ class Workout(Base):
         if not values:
             return None
         return round(max(values))
+
+
+class DetectedSession(Base):
+    """A workout session inferred from raw HR + step streams (see detection.py).
+    Replaced wholesale per athlete on each (re)detection run."""
+    __tablename__ = "detected_sessions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    athlete_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    sync_id: Mapped[int] = mapped_column(Integer, nullable=False)  # source sync
+    start_time: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    end_time: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    duration_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    peak_hr: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    avg_hr: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_steps: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    avg_steps_per_min: Mapped[float | None] = mapped_column(Float, nullable=True)
+    total_distance_meters: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    inferred_activity: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    # Reconciliation with explicit workouts (plain columns, no FK for simplicity).
+    matched_workout_uuid: Mapped[str | None] = mapped_column(String, nullable=True)
+    matched_activity_type: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    # Data-quality flags.
+    hr_coverage_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    hr_source_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    detection_version: Mapped[str] = mapped_column(String, nullable=False)
+
+    # HR/step/distance streams sliced to this session, for the detail chart.
+    raw_payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+    __table_args__ = (
+        Index("ix_sessions_athlete_start", "athlete_id", "start_time"),
+    )
