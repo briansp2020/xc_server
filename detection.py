@@ -30,10 +30,13 @@ MIN_AVG_CADENCE_SPM = 30 # a kept session must average this many steps/min — p
 RUN_CADENCE_SPM = 150    # >= this average cadence => RUNNING, else WALKING
 
 
-def parse_utc(iso: str) -> datetime:
-    """Parse an ISO-8601 timestamp to a naive-UTC datetime (matches how the
-    DB stores times, so detected times compare cleanly with workout rows)."""
-    dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+def parse_utc(value) -> datetime:
+    """Normalize a timestamp to a naive-UTC datetime (matches how the DB stores
+    times). Accepts an ISO-8601 string or an already-parsed datetime."""
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
     if dt.tzinfo is not None:
         dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
     return dt

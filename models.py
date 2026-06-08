@@ -25,6 +25,42 @@ class Sync(Base):
     )
 
 
+class HeartRateSample(Base):
+    """One heart-rate reading, deduped by (uuid, time). Health Connect packs
+    many readings into a single HeartRateRecord that share one uuid, so uuid
+    alone is NOT unique per reading — (uuid, time) is."""
+    __tablename__ = "heart_rate_samples"
+
+    uuid: Mapped[str] = mapped_column(String, primary_key=True)
+    time: Mapped[datetime] = mapped_column(DateTime, primary_key=True)
+    athlete_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    bpm: Mapped[int] = mapped_column(Integer, nullable=False)
+    source: Mapped[str | None] = mapped_column(String, nullable=True)
+    recording_method: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    __table_args__ = (Index("ix_hr_athlete_time", "athlete_id", "time"),)
+
+
+class IntervalSample(Base):
+    """One interval reading (steps, distance, calories, sleep stage, ...),
+    deduped by uuid. The `stream` column names which kind it is."""
+    __tablename__ = "interval_samples"
+
+    uuid: Mapped[str] = mapped_column(String, primary_key=True)
+    athlete_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    stream: Mapped[str] = mapped_column(String, nullable=False)  # "step", "distance", ...
+    start_time: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    end_time: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    value: Mapped[float] = mapped_column(Float, nullable=False)
+    unit: Mapped[str] = mapped_column(String, nullable=False)
+    source: Mapped[str | None] = mapped_column(String, nullable=True)
+    recording_method: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    __table_args__ = (
+        Index("ix_interval_athlete_stream_start", "athlete_id", "stream", "start_time"),
+    )
+
+
 class Workout(Base):
     __tablename__ = "workouts"
 

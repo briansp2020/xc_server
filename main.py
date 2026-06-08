@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from database import Base, engine, get_db
 from detection import DETECTION_VERSION, detect_sessions, parse_utc
-from models import DetectedSession, Sync, Workout
+from models import DetectedSession, HeartRateSample, IntervalSample, Sync, Workout
 import schemas
 
 FRONTEND_DIR = Path(__file__).parent / "frontend"
@@ -54,6 +54,79 @@ _INTERVAL_STREAMS = [
     "flights_climbed_samples", "activity_intensity_samples",
 ]
 
+# Interval streams fanned into the interval_samples table: payload field -> label.
+_INTERVAL_STREAM_FIELDS = {
+    "step_samples": "step",
+    "distance_samples": "distance",
+    "total_calorie_samples": "total_calorie",
+    "active_energy_samples": "active_energy",
+    "basal_energy_samples": "basal_energy",
+    "flights_climbed_samples": "flights_climbed",
+    "activity_intensity_samples": "activity_intensity",
+    "sleep_sessions": "sleep_session",
+    "sleep_deep_samples": "sleep_deep",
+    "sleep_rem_samples": "sleep_rem",
+    "sleep_light_samples": "sleep_light",
+    "sleep_awake_samples": "sleep_awake",
+}
+
+
+def _store_samples(db: Session, payload: schemas.HealthSync) -> None:
+    """Fan the raw streams into the typed tables, deduped by their natural key
+    (HR by (uuid, time); intervals by uuid). Re-uploads upsert in place, so the
+    same sample is stored once no matter how many times it's sent."""
+    aid = payload.athlete_id
+
+    # Heart rate -> heart_rate_samples (dedup within batch by (uuid, time)).
+    hr_rows: dict[tuple, dict] = {}
+    for s in payload.heart_rate_samples:
+        if s.uuid is None:
+            continue  # no key to dedup on (none in real data)
+        t = parse_utc(s.time)
+        hr_rows[(s.uuid, t)] = {
+            "uuid": s.uuid, "time": t, "athlete_id": aid, "bpm": round(s.value),
+            "source": s.source, "recording_method": s.recording_method,
+        }
+    if hr_rows:
+        stmt = sqlite_insert(HeartRateSample)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["uuid", "time"],
+            set_={c: getattr(stmt.excluded, c)
+                  for c in ("athlete_id", "bpm", "source", "recording_method")},
+        )
+        db.execute(stmt, list(hr_rows.values()))
+
+    # Interval streams -> interval_samples (dedup within batch by uuid).
+    iv_rows: dict[str, dict] = {}
+    for field, label in _INTERVAL_STREAM_FIELDS.items():
+        for s in getattr(payload, field):
+            if s.uuid is None:
+                continue
+            iv_rows[s.uuid] = {
+                "uuid": s.uuid, "athlete_id": aid, "stream": label,
+                "start_time": parse_utc(s.start), "end_time": parse_utc(s.end),
+                "value": s.value, "unit": s.unit, "source": s.source,
+                "recording_method": s.recording_method,
+            }
+    if iv_rows:
+        stmt = sqlite_insert(IntervalSample)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["uuid"],
+            set_={c: getattr(stmt.excluded, c)
+                  for c in ("athlete_id", "stream", "start_time", "end_time",
+                            "value", "unit", "source", "recording_method")},
+        )
+        db.execute(stmt, list(iv_rows.values()))
+
+
+def _stripped_payload(payload: schemas.HealthSync) -> dict:
+    """The sync payload minus the bulk streams now held (deduped) in the typed
+    tables — keeps the syncs row small instead of duplicating ~15 MB per upload."""
+    data = payload.model_dump(mode="json")
+    for key in ("heart_rate_samples", *_INTERVAL_STREAM_FIELDS.keys()):
+        data.pop(key, None)
+    return data
+
 
 def _slice_streams(payload: schemas.HealthSync, start, end) -> dict:
     """Return the global streams trimmed to [start, end] for one workout."""
@@ -71,17 +144,30 @@ def _slice_streams(payload: schemas.HealthSync, start, end) -> dict:
     return sliced
 
 
-def _slice_raw_to_window(raw: dict, start, end) -> dict:
-    """Slice HR/step/distance from a stored sync's raw_payload to [start, end]."""
+def _slice_session_from_tables(db: Session, athlete_id: int, start, end) -> dict:
+    """Build a detected session's HR/step/distance slice by querying the typed
+    tables for [start, end] — for the session detail chart."""
     sliced: dict[str, list] = {}
-    hr = [s for s in raw.get("heart_rate_samples", [])
-          if start <= parse_utc(s["time"]) <= end]
+    hr = db.execute(
+        select(HeartRateSample.time, HeartRateSample.bpm, HeartRateSample.source)
+        .where(HeartRateSample.athlete_id == athlete_id,
+               HeartRateSample.time >= start, HeartRateSample.time < end)
+        .order_by(HeartRateSample.time)).all()
     if hr:
-        sliced["heart_rate_samples"] = hr
-    for name in ("step_samples", "distance_samples"):
-        sel = [s for s in raw.get(name, []) if start <= parse_utc(s["start"]) <= end]
-        if sel:
-            sliced[name] = sel
+        sliced["heart_rate_samples"] = [
+            {"time": t.isoformat(), "value": bpm, "source": src} for t, bpm, src in hr]
+    for label in ("step", "distance"):
+        rows = db.execute(
+            select(IntervalSample.start_time, IntervalSample.end_time,
+                   IntervalSample.value, IntervalSample.source)
+            .where(IntervalSample.athlete_id == athlete_id,
+                   IntervalSample.stream == label,
+                   IntervalSample.start_time >= start, IntervalSample.start_time <= end)
+            .order_by(IntervalSample.start_time)).all()
+        if rows:
+            sliced[f"{label}_samples"] = [
+                {"start": st.isoformat(), "end": et.isoformat(), "value": v, "source": src}
+                for st, et, v, src in rows]
     return sliced
 
 
@@ -89,28 +175,37 @@ def _overlaps(a_start, a_end, b_start, b_end) -> bool:
     return a_start < b_end and b_start < a_end
 
 
-def run_detection_for_sync(db: Session, sync: Sync) -> int:
-    """Detect sessions from one sync's streams and replace the athlete's
-    detected_sessions. Caller commits."""
-    raw = sync.raw_payload
-    sessions = detect_sessions(
-        raw.get("heart_rate_samples", []), raw.get("step_samples", []))
+def run_detection_for_athlete(db: Session, athlete_id: int) -> int:
+    """Detect sessions from the athlete's deduped samples (across all syncs) and
+    replace their detected_sessions. Caller commits."""
+    hr_samples = [
+        {"time": t, "value": bpm, "source": src}
+        for t, bpm, src in db.execute(
+            select(HeartRateSample.time, HeartRateSample.bpm, HeartRateSample.source)
+            .where(HeartRateSample.athlete_id == athlete_id))]
+    step_samples = [
+        {"start": st, "value": v, "source": src}
+        for st, v, src in db.execute(
+            select(IntervalSample.start_time, IntervalSample.value, IntervalSample.source)
+            .where(IntervalSample.athlete_id == athlete_id,
+                   IntervalSample.stream == "step"))]
+    sessions = detect_sessions(hr_samples, step_samples)
 
     workouts = db.scalars(
-        select(Workout).where(Workout.athlete_id == sync.athlete_id)).all()
+        select(Workout).where(Workout.athlete_id == athlete_id)).all()
 
     db.execute(delete(DetectedSession)
-               .where(DetectedSession.athlete_id == sync.athlete_id))
+               .where(DetectedSession.athlete_id == athlete_id))
 
     for s in sessions:
         match = next(
             (w for w in workouts
              if _overlaps(s.start, s.end, w.start_time, w.end_time)), None)
-        sliced = _slice_raw_to_window(raw, s.start, s.end)
+        sliced = _slice_session_from_tables(db, athlete_id, s.start, s.end)
         distance = sum(x.get("value") or 0 for x in sliced.get("distance_samples", []))
         db.add(DetectedSession(
-            athlete_id=sync.athlete_id,
-            sync_id=sync.id,
+            athlete_id=athlete_id,
+            sync_id=0,  # detection now spans all syncs, not tied to one
             start_time=s.start,
             end_time=s.end,
             duration_seconds=s.duration_seconds,
@@ -132,7 +227,8 @@ def run_detection_for_sync(db: Session, sync: Sync) -> int:
 
 @app.post("/workouts", status_code=201)
 def ingest_sync(payload: schemas.HealthSync, db: Session = Depends(get_db)):
-    # 1. Persist the whole sync untouched, for replay / later session detection.
+    # 1. Record the sync (metadata + workouts only; the bulk streams live,
+    #    deduped, in the typed tables instead of being copied here every upload).
     sync = Sync(
         athlete_id=payload.athlete_id,
         uploaded_at=payload.uploaded_at,
@@ -140,11 +236,14 @@ def ingest_sync(payload: schemas.HealthSync, db: Session = Depends(get_db)):
         window_end=payload.window_end,
         client_version=payload.client_version,
         source_platform=payload.source_platform,
-        raw_payload=payload.model_dump(mode="json"),
+        raw_payload=_stripped_payload(payload),
     )
     db.add(sync)
 
-    # 2. Upsert workout summaries, slicing the global streams to each window so
+    # 2. Fan the raw streams into the typed tables, deduped by their keys.
+    _store_samples(db, payload)
+
+    # 3. Upsert workout summaries, slicing the global streams to each window so
     #    the dashboard/detail view keep working. Dedup within the batch (last
     #    wins) so a single INSERT can't hit the same source_uuid twice.
     rows_by_uuid: dict[str, dict] = {}
@@ -175,10 +274,10 @@ def ingest_sync(payload: schemas.HealthSync, db: Session = Depends(get_db)):
         )
         db.execute(stmt)
 
-    db.commit()  # sync + workouts persisted; sync.id now populated
+    db.commit()  # sync, samples, and workouts persisted
 
-    # 3. Detect exercise sessions from the raw streams (incl. untagged ones).
-    detected = run_detection_for_sync(db, sync)
+    # 4. Detect exercise sessions from the deduped streams (incl. untagged ones).
+    detected = run_detection_for_athlete(db, payload.athlete_id)
     db.commit()
 
     return {
@@ -226,19 +325,14 @@ def get_workout(source_uuid: str, db: Session = Depends(get_db)):
 
 @app.post("/detect")
 def redetect(athlete_id: int | None = None, db: Session = Depends(get_db)):
-    """Re-run detection against already-stored syncs (no client re-upload).
-    Uses each athlete's most recent sync (the full current 30-day window)."""
-    q = select(Sync.athlete_id).distinct()
+    """Re-run detection against already-stored samples (no client re-upload)."""
+    q = select(HeartRateSample.athlete_id).distinct()
     if athlete_id is not None:
-        q = q.where(Sync.athlete_id == athlete_id)
+        q = q.where(HeartRateSample.athlete_id == athlete_id)
 
     results: dict[int, int] = {}
     for (aid,) in db.execute(q):
-        latest = db.scalars(
-            select(Sync).where(Sync.athlete_id == aid)
-            .order_by(Sync.uploaded_at.desc())).first()
-        if latest is not None:
-            results[aid] = run_detection_for_sync(db, latest)
+        results[aid] = run_detection_for_athlete(db, aid)
     db.commit()
     return {"detection_version": DETECTION_VERSION, "detected_per_athlete": results}
 

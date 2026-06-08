@@ -54,13 +54,21 @@ discriminator (`health_sync`) is what identifies it.
 
 ## How data is stored
 
-- **`syncs`** — every upload is stored whole (`raw_payload` JSON), so the
-  session-detection algorithm can be re-run later without the client
-  re-uploading. One upload = one row.
+The client re-uploads the full 30-day window every time, so samples are
+**deduped on ingest** rather than duplicated:
+
+- **`heart_rate_samples`** — one row per HR reading, deduped by `(uuid, time)`.
+  (Health Connect packs many readings into one `HeartRateRecord` sharing a uuid,
+  so uuid alone isn't unique — `(uuid, time)` is.)
+- **`interval_samples`** — one row per interval reading (steps, distance,
+  calories, sleep stages, …), deduped by `uuid`, with a `stream` column.
+- **`syncs`** — upload metadata (window, version, workouts). The bulk streams are
+  **not** copied here; they live deduped in the tables above, so re-uploading the
+  same window doesn't grow storage.
 - **`workouts`** — the explicit `ExerciseSessionRecord`s the recording app wrote
-  (summary columns), keyed by `source_uuid` (upsert on re-upload). At ingest,
-  each global stream (heart rate, steps, distance, …) is **sliced to the
-  workout's time window** and stored on the row so the dashboard can chart it.
+  (summary columns), keyed by `source_uuid` (upsert on re-upload). At ingest each
+  stream is **sliced to the workout's time window** and stored on the row so the
+  dashboard can chart it.
 
 Most uploaded data is raw 30-day streams that fall *outside* any explicit
 workout. **Session detection** (`detection.py`) recovers those: it scans the
@@ -72,7 +80,7 @@ streams for elevated-HR periods with real movement and writes `detected_sessions
 ```
 main.py        FastAPI app: endpoints + static dashboard mount
 database.py    SQLAlchemy engine, Base, get_db dependency
-models.py      ORM models: Sync, Workout, DetectedSession
+models.py      ORM models: Sync, Workout, HeartRateSample, IntervalSample, DetectedSession
 schemas.py     Pydantic models: HealthSync (+ samples) and API responses
 detection.py   Exercise-session detection from raw HR + step streams
 frontend/      Dashboard (plain HTML/JS/CSS, Chart.js via CDN; an API client)

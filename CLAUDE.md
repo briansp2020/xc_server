@@ -14,9 +14,10 @@ dashboard. Beginner-owned project — favor simple, explained code over cleverne
 - `main.py` — endpoints + `StaticFiles` mount for the dashboard (mounted **last**
   at `/` so API routes take precedence; `GET /` serves `frontend/index.html`).
 - `database.py` — engine (`xc_training.db`), `Base`, `get_db` session dependency.
-- `models.py` — `Sync` (whole upload) and `Workout` (explicit sessions).
+- `models.py` — `Sync` (upload metadata), `HeartRateSample` + `IntervalSample`
+  (deduped raw streams), `Workout` (explicit sessions), `DetectedSession`.
 - `schemas.py` — `HealthSync` (incoming) + `WorkoutSummary`/`WorkoutDetail`/
-  `WeeklyDistance` (responses).
+  `WeeklyDistance`/`SessionSummary`/`SessionDetail` (responses).
 - `frontend/` — vanilla HTML/JS/CSS, Chart.js from CDN, **no build tools**.
 
 ## Conventions
@@ -30,13 +31,15 @@ dashboard. Beginner-owned project — favor simple, explained code over cleverne
   / `max_heart_rate` are `@property`s computed from the sliced `heart_rate_samples`
   in `raw_payload`. Add similar derived values as properties + a field on
   `WorkoutSummary` (read via `from_attributes`).
-- **Upserts use the SQLite dialect** `insert(...).on_conflict_do_update(...)` keyed
-  by `source_uuid`. Dedup a batch in Python first (last-wins) — SQLite rejects the
-  same conflict key twice in one statement.
-- **Ingest model:** `POST /workouts` stores the full payload on a `syncs` row,
-  then upserts each workout with the global streams **sliced to its `[start,end]`
-  window** (`_slice_streams` in `main.py`). NumericSamples placed by `time`,
-  IntervalSamples by `start`; sleep streams excluded from workout slices.
+- **Upserts use the SQLite dialect** `insert(...).on_conflict_do_update(...)`.
+  Dedup a batch in Python first (last-wins) — SQLite rejects the same conflict key
+  twice in one statement. Dedup keys: workouts `source_uuid`; HR `(uuid, time)`;
+  interval samples `uuid`.
+- **Ingest model:** `POST /workouts` fans the raw streams into the deduped typed
+  tables (`_store_samples`), records a small `syncs` metadata row (bulk streams
+  stripped via `_stripped_payload`), upserts each workout with streams **sliced to
+  its `[start,end]` window** (`_slice_streams`), then runs detection. The client
+  re-uploads the full 30-day window each time, so dedup keeps samples stored once.
 
 ## Gotchas (learned the hard way)
 
@@ -53,9 +56,10 @@ dashboard. Beginner-owned project — favor simple, explained code over cleverne
   IP, which requires a Windows `netsh interface portproxy` (LAN IP:8000 → WSL
   IP:8000) + firewall rule. The WSL IP changes on reboot and breaks it. `10.0.2.2`
   is emulator-only. (See the `phone-to-wsl-networking` memory.)
-- **Uploads are large** (~15 MB, ~160k HR samples per 30-day sync). Most samples
-  fall outside any explicit workout — they only become visible once session
-  detection exists.
+- **Uploads are large** (~15 MB, ~160k HR samples per 30-day sync) but fan out to
+  the typed tables deduped, so re-uploads don't grow storage. The 164k upsert
+  takes ~2s. Most samples fall outside any explicit workout — session detection
+  surfaces them.
 
 ## Testing
 
@@ -70,10 +74,12 @@ the dashboard via Windows Chrome confirms the frontend renders.
 minutes by **elevated HR** (HR drives continuity; per-minute steps are too noisy
 to gate on) → gap-merge → ≥5-min filter → validate session **average cadence**
 (rejects stress/heat HR spikes) → run/walk by cadence.
-`run_detection_for_sync` in `main.py` runs it over a sync's streams, matches each
-session to overlapping explicit workouts, and writes `detected_sessions`
-(replacing the athlete's rows). It runs automatically at ingest and via
-`POST /detect` (reprocess each athlete's latest stored sync — no re-upload).
+`run_detection_for_athlete` in `main.py` reads the athlete's deduped HR + step
+rows from the typed tables (across all syncs), matches each session to overlapping
+explicit workouts, and writes `detected_sessions` (replacing the athlete's rows).
+It runs automatically at ingest and via `POST /detect` (reprocess from stored
+samples — no re-upload). When building the step list for detection, **include
+`source`** or the primary-source dedup silently breaks and cadence inflates.
 `GET /sessions` + `/sessions/{id}` serve them; the dashboard shows them with
 recorded/detected badges and a per-session HR chart (`session.html`).
 
@@ -93,9 +99,8 @@ bridges adjacent walking), which dilutes a run's average cadence.
 
 ## Not yet built (deferred, described in the schema doc)
 
-- Typed per-sample tables (`heart_rate_samples`, `interval_samples`).
 - Per-athlete resting/max HR profiles to tune the detection threshold.
-- Detection across multiple syncs (currently uses the latest sync per athlete).
+- Pruning old `syncs` rows (metadata only now, so low priority).
 - Auth (replace `athlete_id` with a token-derived identity), GPS via Strava OAuth.
 
 ## Commits
