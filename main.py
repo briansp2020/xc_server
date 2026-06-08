@@ -1,13 +1,14 @@
 from collections import defaultdict
 from contextlib import asynccontextmanager
-from datetime import date, timedelta
+from datetime import date, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import delete, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 
 from database import Base, engine, get_db
 from detection import DETECTION_VERSION, detect_sessions, parse_utc
@@ -15,6 +16,7 @@ from models import DetectedSession, HeartRateSample, IntervalSample, Sync, Worko
 import schemas
 
 FRONTEND_DIR = Path(__file__).parent / "frontend"
+PACIFIC = ZoneInfo("America/Los_Angeles")  # bucket/display in the athlete's zone
 
 
 @asynccontextmanager
@@ -37,7 +39,16 @@ _UPSERT_COLUMNS = [
     "athlete_id", "source_app", "activity_type", "recording_method",
     "start_time", "end_time", "duration_seconds",
     "total_distance_meters", "total_energy_kcal", "total_steps",
+    "avg_heart_rate", "max_heart_rate",
     "raw_payload", "uploaded_at", "client_version",
+]
+
+# Summary columns for the workouts list — lets the query skip the big raw_payload.
+_WORKOUT_SUMMARY_COLUMNS = [
+    "source_uuid", "athlete_id", "source_app", "activity_type", "recording_method",
+    "start_time", "end_time", "duration_seconds", "total_distance_meters",
+    "total_energy_kcal", "total_steps", "avg_heart_rate", "max_heart_rate",
+    "uploaded_at", "client_version",
 ]
 
 # Streams sliced onto each workout for the dashboard. NumericSamples are placed
@@ -186,13 +197,17 @@ def run_detection_for_athlete(db: Session, athlete_id: int) -> int:
         for t, bpm, src in db.execute(
             select(HeartRateSample.time, HeartRateSample.bpm, HeartRateSample.source)
             .where(HeartRateSample.athlete_id == athlete_id))]
-    step_samples = [
-        {"start": st, "value": v, "source": src}
-        for st, v, src in db.execute(
-            select(IntervalSample.start_time, IntervalSample.value, IntervalSample.source)
-            .where(IntervalSample.athlete_id == athlete_id,
-                   IntervalSample.stream == "step"))]
-    sessions = detect_sessions(hr_samples, step_samples)
+    def interval_stream(stream: str):
+        return [
+            {"start": st, "value": v, "source": src}
+            for st, v, src in db.execute(
+                select(IntervalSample.start_time, IntervalSample.value, IntervalSample.source)
+                .where(IntervalSample.athlete_id == athlete_id,
+                       IntervalSample.stream == stream))]
+
+    step_samples = interval_stream("step")
+    distance_samples = interval_stream("distance")
+    sessions = detect_sessions(hr_samples, step_samples, distance_samples)
 
     workouts = db.scalars(
         select(Workout).where(Workout.athlete_id == athlete_id)).all()
@@ -205,7 +220,6 @@ def run_detection_for_athlete(db: Session, athlete_id: int) -> int:
             (w for w in workouts
              if _overlaps(s.start, s.end, w.start_time, w.end_time)), None)
         sliced = _slice_session_from_tables(db, athlete_id, s.start, s.end)
-        distance = sum(x.get("value") or 0 for x in sliced.get("distance_samples", []))
         db.add(DetectedSession(
             athlete_id=athlete_id,
             sync_id=0,  # detection now spans all syncs, not tied to one
@@ -216,7 +230,7 @@ def run_detection_for_athlete(db: Session, athlete_id: int) -> int:
             avg_hr=s.avg_hr,
             total_steps=s.total_steps,
             avg_steps_per_min=s.avg_steps_per_min,
-            total_distance_meters=round(distance) if distance else None,
+            total_distance_meters=s.total_distance_meters,
             inferred_activity=s.inferred_activity,
             matched_workout_uuid=match.source_uuid if match else None,
             matched_activity_type=match.activity_type if match else None,
@@ -251,6 +265,9 @@ def ingest_sync(payload: schemas.HealthSync, db: Session = Depends(get_db)):
     #    wins) so a single INSERT can't hit the same source_uuid twice.
     rows_by_uuid: dict[str, dict] = {}
     for w in payload.workouts:
+        sliced = _slice_streams(payload, w.start_time, w.end_time)
+        hr_vals = [s["value"] for s in sliced.get("heart_rate_samples", [])
+                   if s.get("value") is not None]
         rows_by_uuid[w.source_uuid] = {
             "source_uuid": w.source_uuid,
             "athlete_id": payload.athlete_id,
@@ -263,7 +280,9 @@ def ingest_sync(payload: schemas.HealthSync, db: Session = Depends(get_db)):
             "total_distance_meters": w.total_distance_meters,
             "total_energy_kcal": w.total_energy_kcal,
             "total_steps": w.total_steps,
-            "raw_payload": _slice_streams(payload, w.start_time, w.end_time),
+            "avg_heart_rate": round(sum(hr_vals) / len(hr_vals)) if hr_vals else None,
+            "max_heart_rate": round(max(hr_vals)) if hr_vals else None,
+            "raw_payload": sliced,
             "uploaded_at": payload.uploaded_at,
             "client_version": payload.client_version,
         }
@@ -293,7 +312,13 @@ def ingest_sync(payload: schemas.HealthSync, db: Session = Depends(get_db)):
 
 @app.get("/workouts", response_model=list[schemas.WorkoutSummary])
 def list_workouts(athlete_id: int | None = None, db: Session = Depends(get_db)):
-    query = select(Workout).order_by(Workout.start_time.desc())
+    # load_only the summary columns so the list doesn't deserialize each
+    # workout's raw_payload (avg/max HR are columns now, not derived from it).
+    query = (
+        select(Workout)
+        .options(load_only(*(getattr(Workout, c) for c in _WORKOUT_SUMMARY_COLUMNS)))
+        .order_by(Workout.start_time.desc())
+    )
     if athlete_id is not None:
         query = query.where(Workout.athlete_id == athlete_id)
     return db.scalars(query).all()
@@ -308,8 +333,10 @@ def weekly_distance(athlete_id: int | None = None, db: Session = Depends(get_db)
 
     totals: dict[date, float] = defaultdict(float)
     for start_time, distance in db.execute(query):
-        d = start_time.date()
-        monday = d - timedelta(days=d.weekday())  # ISO week start
+        # Stored times are naive UTC; bucket by the Pacific date so weeks line
+        # up with the times shown on the dashboard.
+        d = start_time.replace(tzinfo=timezone.utc).astimezone(PACIFIC).date()
+        monday = d - timedelta(days=d.weekday())  # ISO week start (Monday)
         totals[monday] += distance or 0
 
     return [

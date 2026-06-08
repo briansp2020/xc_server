@@ -27,10 +27,12 @@ dashboard. Beginner-owned project — favor simple, explained code over cleverne
   schema changes incompatibly, the doc bumps the discriminator (e.g. `_v2`).
 - **The dashboard is an API client.** It must get data only by fetching the JSON
   endpoints — never embed server-side DB access in the frontend.
-- **Derived HR is computed, not stored as its own column.** `Workout.avg_heart_rate`
-  / `max_heart_rate` are `@property`s computed from the sliced `heart_rate_samples`
-  in `raw_payload`. Add similar derived values as properties + a field on
-  `WorkoutSummary` (read via `from_attributes`).
+- **Derived workout HR is computed at ingest and stored as columns.**
+  `Workout.avg_heart_rate`/`max_heart_rate` are filled from the sliced
+  `heart_rate_samples` when the workout is upserted, so `list_workouts`
+  (`load_only` the summary columns) never deserializes `raw_payload`. Keep that
+  pattern for new derived values — compute once at write, don't recompute per
+  read from the JSON blob.
 - **Upserts use the SQLite dialect** `insert(...).on_conflict_do_update(...)`.
   Dedup a batch in Python first (last-wins) — SQLite rejects the same conflict key
   twice in one statement. Dedup keys: workouts `source_uuid`; HR `(uuid, time)`;
@@ -86,12 +88,14 @@ recorded/detected badges and a per-session HR chart (`session.html`).
 
 Bump `DETECTION_VERSION` and re-run `/detect` when the algorithm changes.
 
-**Step source dedup:** steps arrive from multiple sources (Fitbit + Android +
-Health Connect) that redundantly count the same steps with overlapping records —
-summing them roughly doubled cadence. Detection picks one primary source (the one
+**Step/distance source dedup:** steps *and* distance arrive from multiple sources
+(Fitbit + Android + Health Connect) that redundantly count the same activity with
+overlapping records — summing inflates totals (cadence ~2x; distance likewise).
+`_minute_max_from_primary_source` (detection.py) picks one primary source (the one
 with the MOST records — the continuous wrist tracker) and takes the largest record
-per minute. Picking by total steps is wrong: a coarse all-day phone counter can
-have the highest total but not cover workouts.
+per minute. Picking by total is wrong: a coarse all-day phone counter can have the
+highest total but not cover workouts. Detected-session distance uses this too —
+don't sum interval rows across sources.
 
 **Known tuning gaps (v1):** HR threshold is a fixed default (no per-athlete
 resting/max yet). 5-sample HR smoothing from the doc isn't applied (minute-median

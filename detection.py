@@ -62,18 +62,46 @@ class Session:
     avg_hr: int | None
     total_steps: int
     avg_steps_per_min: float
+    total_distance_meters: int | None
     inferred_activity: str
     hr_coverage_pct: float
     hr_source_count: int
 
 
-def detect_sessions(hr_samples, step_samples,
+def _minute_max_from_primary_source(samples) -> dict:
+    """Collapse interval samples (steps, distance) to one value per minute.
+
+    Several apps report the *same* steps/distance at once (Fitbit + Android +
+    Health Connect's aggregator), with records that also overlap in time —
+    summing them inflates the total (~2x). Pick a single primary source — the
+    one with the MOST records, i.e. the continuous wrist tracker — and take the
+    largest record per minute (which also neutralizes overlapping within-source
+    records). Picking by total value instead would wrongly select a coarse
+    all-day phone counter that doesn't cover workouts.
+    """
+    if not samples:
+        return {}
+    counts: dict = {}
+    for s in samples:
+        counts[s.get("source")] = counts.get(s.get("source"), 0) + 1
+    primary = max(counts, key=counts.get)
+    by_min: dict[datetime, float] = {}
+    for s in samples:
+        if s.get("source") != primary:
+            continue
+        m = _floor_minute(parse_utc(s["start"]))
+        by_min[m] = max(by_min.get(m, 0), s.get("value") or 0)
+    return by_min
+
+
+def detect_sessions(hr_samples, step_samples, distance_samples=None,
                     resting_hr: int = RESTING_HR,
                     max_hr: int = MAX_HR) -> list[Session]:
     """Detect exercise sessions.
 
-    hr_samples:   list of {"time", "value", "source"?}
-    step_samples: list of {"start", "value"}
+    hr_samples:       list of {"time", "value", "source"?}
+    step_samples:     list of {"start", "value", "source"?}
+    distance_samples: list of {"start", "value", "source"?} (optional)
     """
     hr_threshold = resting_hr + 0.4 * (max_hr - resting_hr)
 
@@ -89,26 +117,10 @@ def detect_sessions(hr_samples, step_samples,
         if s.get("source"):
             src_by_min.setdefault(m, set()).add(s["source"])
 
-    # Steps come from multiple sources (Fitbit, Android, Health Connect's own
-    # aggregator) that redundantly count the *same* steps, and records can
-    # overlap in time. Summing them inflates cadence (~2x). So: use a single
-    # primary source and take the largest record per minute (which also
-    # neutralizes overlapping within-source records).
-    #
-    # The primary is the source with the MOST records — the continuous wrist
-    # tracker (e.g. Fitbit, ~1 record/min). Picking by total steps instead would
-    # wrongly select a coarse all-day phone counter that doesn't cover workouts.
-    src_counts: dict = {}
-    for s in step_samples:
-        src_counts[s.get("source")] = src_counts.get(s.get("source"), 0) + 1
-    primary_source = max(src_counts, key=src_counts.get) if src_counts else None
-
-    steps_by_min: dict[datetime, float] = {}
-    for s in step_samples:
-        if s.get("source") != primary_source:
-            continue
-        m = _floor_minute(parse_utc(s["start"]))
-        steps_by_min[m] = max(steps_by_min.get(m, 0), s.get("value") or 0)
+    # Steps and distance both arrive from multiple overlapping sources; collapse
+    # each to one value per minute from a single primary source (see helper).
+    steps_by_min = _minute_max_from_primary_source(step_samples)
+    distance_by_min = _minute_max_from_primary_source(distance_samples or [])
 
     # 2. Active minutes: elevated HR only. HR is continuous and reliable, so it
     #    drives session continuity; cadence is validated per session (step 5) to
@@ -137,10 +149,13 @@ def detect_sessions(hr_samples, step_samples,
         if duration_min < MIN_SESSION_MIN:
             continue
 
-        total_steps = sum(steps_by_min.get(m, 0) for m in _minute_range(start, end))
+        window = list(_minute_range(start, end))
+        total_steps = sum(steps_by_min.get(m, 0) for m in window)
         avg_spm = total_steps / duration_min if duration_min else 0
         if avg_spm < MIN_AVG_CADENCE_SPM:
             continue  # elevated HR but no sustained movement -> not exercise
+
+        total_distance = sum(distance_by_min.get(m, 0) for m in window)
 
         win_minutes = [m for m in hr_by_min if start <= m < end]
         hr_meds = [median(hr_by_min[m]) for m in win_minutes]
@@ -157,6 +172,7 @@ def detect_sessions(hr_samples, step_samples,
             avg_hr=round(mean(hr_meds)) if hr_meds else None,
             total_steps=int(total_steps),
             avg_steps_per_min=round(avg_spm, 1),
+            total_distance_meters=round(total_distance) if total_distance else None,
             inferred_activity="RUNNING" if avg_spm >= RUN_CADENCE_SPM else "WALKING",
             hr_coverage_pct=round(coverage, 1),
             hr_source_count=len(sources),

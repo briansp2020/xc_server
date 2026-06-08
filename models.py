@@ -86,6 +86,11 @@ class Workout(Base):
     total_energy_kcal: Mapped[int | None] = mapped_column(Integer, nullable=True)
     total_steps: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
+    # Derived from the sliced heart_rate_samples at ingest and stored as columns
+    # so the workouts list doesn't have to load raw_payload just to show them.
+    avg_heart_rate: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_heart_rate: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     # The global streams (HR, steps, distance, ...) sliced to this workout's
     # time window at ingest, so the dashboard can chart per-workout data. The
     # full untrimmed payload lives on the Sync row for re-processing.
@@ -98,27 +103,6 @@ class Workout(Base):
     __table_args__ = (
         Index("ix_workouts_athlete_start", "athlete_id", "start_time"),
     )
-
-    @property
-    def _hr_values(self) -> list[float]:
-        samples = (self.raw_payload or {}).get("heart_rate_samples") or []
-        return [s["value"] for s in samples if s.get("value") is not None]
-
-    @property
-    def avg_heart_rate(self) -> int | None:
-        """Mean BPM derived from the raw heart_rate_samples (None if none)."""
-        values = self._hr_values
-        if not values:
-            return None
-        return round(sum(values) / len(values))
-
-    @property
-    def max_heart_rate(self) -> int | None:
-        """Peak BPM derived from the raw heart_rate_samples (None if none)."""
-        values = self._hr_values
-        if not values:
-            return None
-        return round(max(values))
 
 
 class DetectedSession(Base):
