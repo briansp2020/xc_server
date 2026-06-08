@@ -102,6 +102,9 @@ bridges adjacent walking), which dilutes a run's average cadence.
 
 - Per-athlete resting/max HR profiles to tune the detection threshold.
 - Pruning old `syncs` rows (metadata only now, so low priority).
+- Splitting sleep stages out of `interval_samples` into their own table — only if
+  sleep analysis becomes a heavy query path. Fine in the shared table for now
+  (sleep volume is tiny vs HR); the `stream` column makes it a clean migration.
 - Auth (replace `athlete_id` with a token-derived identity), GPS via Strava OAuth.
 
 ## Commits
