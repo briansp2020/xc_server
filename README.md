@@ -43,6 +43,9 @@ The SQLite file `xc_training.db` is created automatically on first start.
 | `POST` | `/workouts` | Ingest a `health_sync` payload (the app's upload). Stores the full sync and upserts workout summaries. |
 | `GET` | `/workouts` | List stored workouts (newest first; optional `?athlete_id=`). |
 | `GET` | `/workouts/{source_uuid}` | One workout with its sliced sample streams. |
+| `POST` | `/detect` | Re-run session detection on stored syncs (no re-upload). |
+| `GET` | `/sessions` | List detected sessions (newest first; optional `?athlete_id=`). |
+| `GET` | `/sessions/{id}` | One detected session with its sliced streams. |
 | `GET` | `/stats/weekly` | Total distance per ISO week (for the dashboard chart). |
 | `GET` | `/health` | Liveness check. |
 
@@ -60,16 +63,18 @@ discriminator (`health_sync`) is what identifies it.
   workout's time window** and stored on the row so the dashboard can chart it.
 
 Most uploaded data is raw 30-day streams that fall *outside* any explicit
-workout. Turning those into sessions requires server-side **session detection**,
-which is described in `docs/SERVER_SCHEMA.md` but not yet implemented.
+workout. **Session detection** (`detection.py`) recovers those: it scans the
+streams for elevated-HR periods with real movement and writes `detected_sessions`
+(see `GET /sessions`). It runs at ingest and via `POST /detect`.
 
 ## Project layout
 
 ```
 main.py        FastAPI app: endpoints + static dashboard mount
 database.py    SQLAlchemy engine, Base, get_db dependency
-models.py      ORM models: Sync, Workout
+models.py      ORM models: Sync, Workout, DetectedSession
 schemas.py     Pydantic models: HealthSync (+ samples) and API responses
+detection.py   Exercise-session detection from raw HR + step streams
 frontend/      Dashboard (plain HTML/JS/CSS, Chart.js via CDN; an API client)
 requirements.txt
 docs/          -> SERVER_SCHEMA.md (symlinked from the app repo; git-ignored)

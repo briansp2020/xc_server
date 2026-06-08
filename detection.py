@@ -1,8 +1,13 @@
 """Server-side exercise-session detection from raw HR + step streams.
 
-Implements the recipe in docs/SERVER_SCHEMA.md ("Server-side exercise-session
-detection"): build a 1-minute grid, mark active minutes by HR + cadence, group
-them (bridging short gaps), drop short runs, and summarize each session.
+Based on the recipe in docs/SERVER_SCHEMA.md ("Server-side exercise-session
+detection"): build a 1-minute grid, mark active minutes by elevated HR, group
+them (bridging short gaps), drop short runs, validate real movement by average
+cadence, and summarize each session.
+
+HR drives continuity (it's the continuous, reliable signal); per-minute step
+counts are too noisy to gate on (they fragment a single walk), so cadence is
+validated at the session level instead.
 
 Pure functions only — no DB or FastAPI here, so it can be tested in isolation
 and re-run against stored syncs after tuning the thresholds.
@@ -13,14 +18,15 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from statistics import mean, median
 
-DETECTION_VERSION = "v1"
+DETECTION_VERSION = "v2"  # v2: HR-driven continuity + session-level cadence gate
 
 # Tunable thresholds — see the schema doc "Tuning notes".
 RESTING_HR = 60          # per-athlete eventually; fixed default for now
 MAX_HR = 190
-MIN_STEPS_PER_MIN = 60   # cadence floor; filters HR spikes from stress/heat
 GAP_TOLERANCE_MIN = 2    # a short water break shouldn't end a session
 MIN_SESSION_MIN = 5      # anything shorter isn't a workout
+MIN_AVG_CADENCE_SPM = 30 # a kept session must average this many steps/min — proves
+                         # real movement and rejects stress/heat HR spikes
 RUN_CADENCE_SPM = 150    # >= this average cadence => RUNNING, else WALKING
 
 
@@ -101,11 +107,10 @@ def detect_sessions(hr_samples, step_samples,
         m = _floor_minute(parse_utc(s["start"]))
         steps_by_min[m] = max(steps_by_min.get(m, 0), s.get("value") or 0)
 
-    # 2. Active minutes: elevated HR AND walking-or-faster cadence.
-    active = sorted(
-        m for m, vals in hr_by_min.items()
-        if median(vals) >= hr_threshold and steps_by_min.get(m, 0) >= MIN_STEPS_PER_MIN
-    )
+    # 2. Active minutes: elevated HR only. HR is continuous and reliable, so it
+    #    drives session continuity; cadence is validated per session (step 5) to
+    #    avoid noisy per-minute step counts fragmenting one workout.
+    active = sorted(m for m, vals in hr_by_min.items() if median(vals) >= hr_threshold)
     if not active:
         return []
 
@@ -129,10 +134,13 @@ def detect_sessions(hr_samples, step_samples,
         if duration_min < MIN_SESSION_MIN:
             continue
 
-        win_minutes = [m for m in hr_by_min if start <= m < end]
-        hr_meds = [median(hr_by_min[m]) for m in win_minutes]
         total_steps = sum(steps_by_min.get(m, 0) for m in _minute_range(start, end))
         avg_spm = total_steps / duration_min if duration_min else 0
+        if avg_spm < MIN_AVG_CADENCE_SPM:
+            continue  # elevated HR but no sustained movement -> not exercise
+
+        win_minutes = [m for m in hr_by_min if start <= m < end]
+        hr_meds = [median(hr_by_min[m]) for m in win_minutes]
         sources: set = set()
         for m in win_minutes:
             sources |= src_by_min.get(m, set())

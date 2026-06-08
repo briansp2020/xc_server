@@ -66,8 +66,10 @@ the dashboard via Windows Chrome confirms the frontend renders.
 
 ## Session detection
 
-`detection.py` implements the schema doc's algorithm (minute-grid HR+steps →
-threshold → gap-merge → ≥5-min filter → run/walk by cadence) as pure functions.
+`detection.py` implements the algorithm as pure functions: minute-grid → active
+minutes by **elevated HR** (HR drives continuity; per-minute steps are too noisy
+to gate on) → gap-merge → ≥5-min filter → validate session **average cadence**
+(rejects stress/heat HR spikes) → run/walk by cadence.
 `run_detection_for_sync` in `main.py` runs it over a sync's streams, matches each
 session to overlapping explicit workouts, and writes `detected_sessions`
 (replacing the athlete's rows). It runs automatically at ingest and via
