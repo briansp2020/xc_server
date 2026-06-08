@@ -96,25 +96,28 @@ def _store_samples(db: Session, payload: schemas.HealthSync) -> None:
         )
         db.execute(stmt, list(hr_rows.values()))
 
-    # Interval streams -> interval_samples (dedup within batch by uuid).
-    iv_rows: dict[str, dict] = {}
+    # Interval streams -> interval_samples. Dedup within the batch by
+    # (uuid, stream, start_time): sleep stages share the session's uuid, so uuid
+    # alone would collapse a night's stages into one row.
+    iv_rows: dict[tuple, dict] = {}
     for field, label in _INTERVAL_STREAM_FIELDS.items():
         for s in getattr(payload, field):
             if s.uuid is None:
                 continue
-            iv_rows[s.uuid] = {
-                "uuid": s.uuid, "athlete_id": aid, "stream": label,
-                "start_time": parse_utc(s.start), "end_time": parse_utc(s.end),
+            start = parse_utc(s.start)
+            iv_rows[(s.uuid, label, start)] = {
+                "uuid": s.uuid, "stream": label, "start_time": start,
+                "athlete_id": aid, "end_time": parse_utc(s.end),
                 "value": s.value, "unit": s.unit, "source": s.source,
                 "recording_method": s.recording_method,
             }
     if iv_rows:
         stmt = sqlite_insert(IntervalSample)
         stmt = stmt.on_conflict_do_update(
-            index_elements=["uuid"],
+            index_elements=["uuid", "stream", "start_time"],
             set_={c: getattr(stmt.excluded, c)
-                  for c in ("athlete_id", "stream", "start_time", "end_time",
-                            "value", "unit", "source", "recording_method")},
+                  for c in ("athlete_id", "end_time", "value", "unit",
+                            "source", "recording_method")},
         )
         db.execute(stmt, list(iv_rows.values()))
 

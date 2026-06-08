@@ -42,14 +42,19 @@ class HeartRateSample(Base):
 
 
 class IntervalSample(Base):
-    """One interval reading (steps, distance, calories, sleep stage, ...),
-    deduped by uuid. The `stream` column names which kind it is."""
+    """One interval reading (steps, distance, calories, sleep stage, ...).
+
+    Deduped by the composite key (uuid, stream, start_time): a SleepSessionRecord
+    decomposes into per-stage rows (DEEP/REM/LIGHT/AWAKE + the session itself)
+    that ALL share the parent session's uuid, so uuid alone would collapse a
+    whole night into one row. (Non-sleep streams have unique uuids anyway, so the
+    extra key columns are harmless there.)"""
     __tablename__ = "interval_samples"
 
     uuid: Mapped[str] = mapped_column(String, primary_key=True)
+    stream: Mapped[str] = mapped_column(String, primary_key=True)  # "step", "sleep_deep", ...
+    start_time: Mapped[datetime] = mapped_column(DateTime, primary_key=True)
     athlete_id: Mapped[int] = mapped_column(Integer, nullable=False)
-    stream: Mapped[str] = mapped_column(String, nullable=False)  # "step", "distance", ...
-    start_time: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     end_time: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     value: Mapped[float] = mapped_column(Float, nullable=False)
     unit: Mapped[str] = mapped_column(String, nullable=False)

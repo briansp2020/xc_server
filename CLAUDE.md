@@ -34,7 +34,8 @@ dashboard. Beginner-owned project — favor simple, explained code over cleverne
 - **Upserts use the SQLite dialect** `insert(...).on_conflict_do_update(...)`.
   Dedup a batch in Python first (last-wins) — SQLite rejects the same conflict key
   twice in one statement. Dedup keys: workouts `source_uuid`; HR `(uuid, time)`;
-  interval samples `uuid`.
+  interval samples `(uuid, stream, start_time)` — sleep stages share the
+  session's uuid, so uuid alone collapses a night's stages into one row.
 - **Ingest model:** `POST /workouts` fans the raw streams into the deduped typed
   tables (`_store_samples`), records a small `syncs` metadata row (bulk streams
   stripped via `_stripped_payload`), upserts each workout with streams **sliced to
