@@ -116,6 +116,21 @@ class WeeklyDistance(BaseModel):
     total_distance_meters: float
 
 
+class WeekStats(BaseModel):
+    """One week's training totals for an athlete (Pacific week, Monday start)."""
+    week_start: date
+    total_distance_meters: float
+    total_duration_seconds: int
+    run_count: int
+    session_count: int
+
+
+class WeeklySummary(BaseModel):
+    """This week vs the athlete's own previous week, for the dashboard hero."""
+    this_week: WeekStats
+    last_week: WeekStats
+
+
 class SessionSummary(BaseModel):
     """A detected exercise session (output of the detection algorithm)."""
     model_config = ConfigDict(from_attributes=True)

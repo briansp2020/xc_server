@@ -1,6 +1,6 @@
 from collections import defaultdict
 from contextlib import asynccontextmanager
-from datetime import date, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -324,18 +324,43 @@ def list_workouts(athlete_id: int | None = None, db: Session = Depends(get_db)):
     return db.scalars(query).all()
 
 
+def _pacific_date(dt) -> date:
+    """Stored times are naive UTC; bucket by the Pacific date so weeks line up
+    with the times shown on the dashboard."""
+    return dt.replace(tzinfo=timezone.utc).astimezone(PACIFIC).date()
+
+
+def _activity_entries(db: Session, athlete_id: int | None):
+    """The athlete's activity: detected sessions plus recorded workouts that
+    have no matching session (e.g. manual entries with no samples). Returns
+    (start_time, duration_seconds, distance_meters, activity) tuples."""
+    sq = select(DetectedSession.start_time, DetectedSession.duration_seconds,
+                DetectedSession.total_distance_meters,
+                DetectedSession.matched_activity_type,
+                DetectedSession.inferred_activity,
+                DetectedSession.matched_workout_uuid)
+    wq = select(Workout.source_uuid, Workout.start_time, Workout.duration_seconds,
+                Workout.total_distance_meters, Workout.activity_type)
+    if athlete_id is not None:
+        sq = sq.where(DetectedSession.athlete_id == athlete_id)
+        wq = wq.where(Workout.athlete_id == athlete_id)
+
+    entries, matched = [], set()
+    for start, dur, dist, m_act, i_act, m_uuid in db.execute(sq):
+        entries.append((start, dur, dist, m_act or i_act))
+        if m_uuid:
+            matched.add(m_uuid)
+    for uuid, start, dur, dist, act in db.execute(wq):
+        if uuid not in matched:
+            entries.append((start, dur, dist, act))
+    return entries
+
+
 @app.get("/stats/weekly", response_model=list[schemas.WeeklyDistance])
 def weekly_distance(athlete_id: int | None = None, db: Session = Depends(get_db)):
-    # Only the two columns the chart needs — avoids loading the large raw_payload.
-    query = select(Workout.start_time, Workout.total_distance_meters)
-    if athlete_id is not None:
-        query = query.where(Workout.athlete_id == athlete_id)
-
     totals: dict[date, float] = defaultdict(float)
-    for start_time, distance in db.execute(query):
-        # Stored times are naive UTC; bucket by the Pacific date so weeks line
-        # up with the times shown on the dashboard.
-        d = start_time.replace(tzinfo=timezone.utc).astimezone(PACIFIC).date()
+    for start_time, _dur, distance, _act in _activity_entries(db, athlete_id):
+        d = _pacific_date(start_time)
         monday = d - timedelta(days=d.weekday())  # ISO week start (Monday)
         totals[monday] += distance or 0
 
@@ -343,6 +368,44 @@ def weekly_distance(athlete_id: int | None = None, db: Session = Depends(get_db)
         schemas.WeeklyDistance(week_start=wk, total_distance_meters=totals[wk])
         for wk in sorted(totals)
     ]
+
+
+@app.get("/stats/summary", response_model=schemas.WeeklySummary)
+def weekly_summary(athlete_id: int | None = None, db: Session = Depends(get_db)):
+    """This week vs the athlete's own previous week (Pacific weeks, Monday
+    start). Comparisons are always within one athlete's history."""
+    today = datetime.now(timezone.utc).astimezone(PACIFIC).date()
+    this_monday = today - timedelta(days=today.weekday())
+    last_monday = this_monday - timedelta(days=7)
+
+    buckets = {
+        this_monday: {"distance": 0.0, "duration": 0, "runs": 0, "sessions": 0},
+        last_monday: {"distance": 0.0, "duration": 0, "runs": 0, "sessions": 0},
+    }
+    for start_time, dur, dist, act in _activity_entries(db, athlete_id):
+        d = _pacific_date(start_time)
+        monday = d - timedelta(days=d.weekday())
+        b = buckets.get(monday)
+        if b is None:
+            continue
+        b["distance"] += dist or 0
+        b["duration"] += dur or 0
+        b["sessions"] += 1
+        if (act or "").startswith("RUNNING"):
+            b["runs"] += 1
+
+    def week_stats(monday: date) -> schemas.WeekStats:
+        b = buckets[monday]
+        return schemas.WeekStats(
+            week_start=monday,
+            total_distance_meters=b["distance"],
+            total_duration_seconds=b["duration"],
+            run_count=b["runs"],
+            session_count=b["sessions"],
+        )
+
+    return schemas.WeeklySummary(
+        this_week=week_stats(this_monday), last_week=week_stats(last_monday))
 
 
 @app.get("/workouts/{source_uuid}", response_model=schemas.WorkoutDetail)

@@ -3,42 +3,42 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>XC Training Dashboard</title>
+  <title>Chadwick XC Training Dashboard</title>
   <link rel="stylesheet" href="/style.css" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 </head>
 <body>
-  <header><h1>XC Training Dashboard</h1></header>
+  <header>
+    <h1>Chadwick XC Training Dashboard</h1>
+  </header>
   <main>
-    <section class="card">
-      <h2>Weekly distance</h2>
-      <canvas id="weeklyChart" height="120"></canvas>
-      <p id="chartEmpty" class="muted" hidden>No distance data yet.</p>
+    <section class="hero">
+      <div class="hero-head">
+        <h2>This week</h2>
+        <span class="muted" id="weekRange"></span>
+      </div>
+      <div class="hero-grid">
+        <div class="stat-card">
+          <div class="label">Distance</div>
+          <div class="value" id="wkDistance">—</div>
+          <div class="delta flat" id="wkDistanceDelta"></div>
+        </div>
+        <div class="stat-card">
+          <div class="label">Time</div>
+          <div class="value" id="wkTime">—</div>
+          <div class="delta flat" id="wkTimeDelta"></div>
+        </div>
+        <div class="stat-card">
+          <div class="label">Runs</div>
+          <div class="value" id="wkRuns">—</div>
+          <div class="delta flat" id="wkRunsDelta"></div>
+        </div>
+      </div>
     </section>
 
     <section class="card">
-      <h2>Detected sessions</h2>
-      <table id="sessionsTable">
-        <thead>
-          <tr>
-            <th>Date</th>
-            <th>Activity</th>
-            <th class="num">Duration</th>
-            <th class="num">Distance</th>
-            <th class="num">Avg HR</th>
-            <th class="num">Peak HR</th>
-            <th>Source</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr><td colspan="7" class="muted">Loading&hellip;</td></tr>
-        </tbody>
-      </table>
-    </section>
-
-    <section class="card">
-      <h2>Recorded workouts</h2>
-      <table id="workoutsTable">
+      <h2>Recent workouts</h2>
+      <table id="recentTable">
         <thead>
           <tr>
             <th>Date</th>
@@ -46,12 +46,19 @@
             <th class="num">Duration</th>
             <th class="num">Distance</th>
             <th class="num">Avg HR</th>
+            <th>Source</th>
           </tr>
         </thead>
         <tbody>
-          <tr><td colspan="5" class="muted">Loading&hellip;</td></tr>
+          <tr><td colspan="6" class="muted">Loading&hellip;</td></tr>
         </tbody>
       </table>
+    </section>
+
+    <section class="card">
+      <h2>Weekly distance</h2>
+      <canvas id="weeklyChart" height="120"></canvas>
+      <p id="chartEmpty" class="muted" hidden>No distance data yet.</p>
     </section>
   </main>
   <script src="/app.js"></script>
