@@ -124,9 +124,13 @@ async function load() {
     detail.innerHTML = `<p class="muted">No workout id in the URL.</p>`;
     return;
   }
-  const res = await fetch(`/workouts/${encodeURIComponent(uuid)}`);
+  const res = await authFetch(`/workouts/${encodeURIComponent(uuid)}`);
   if (res.status === 404) {
     detail.innerHTML = `<p class="muted">Workout not found.</p>`;
+    return;
+  }
+  if (res.status === 403) {
+    detail.innerHTML = `<p class="muted">You don't have access to this workout.</p>`;
     return;
   }
   if (!res.ok) throw new Error(`/workouts/${uuid} -> ${res.status}`);

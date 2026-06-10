@@ -1,9 +1,52 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
-from sqlalchemy import JSON, DateTime, Float, Index, Integer, String
+from sqlalchemy import (JSON, DateTime, Float, ForeignKey, Index, Integer,
+                        String, UniqueConstraint)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from database import Base
+
+
+def _utcnow() -> datetime:
+    # Naive UTC, matching how every other timestamp in this DB is stored.
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+class Athlete(Base):
+    """The domain object every data row's athlete_id refers to. Auth lives in
+    auth_identities — never store provider ids (google_id etc.) here."""
+    __tablename__ = "athletes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    email: Mapped[str | None] = mapped_column(String, nullable=True)
+    # "athlete" | "coach". Coaches may read any athlete's data. Promotion is a
+    # manual DB operation for now (see CLAUDE.md "Auth").
+    role: Mapped[str] = mapped_column(String, nullable=False, default="athlete")
+    grade: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False,
+                                                 default=_utcnow)
+
+
+class AuthIdentity(Base):
+    """One external sign-in linked to an athlete. Provider-agnostic by design:
+    Google today, Apple next (required once the iOS app ships with Google
+    sign-in). One athlete can hold several identities (Google + Apple)."""
+    __tablename__ = "auth_identities"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    athlete_id: Mapped[int] = mapped_column(ForeignKey("athletes.id"),
+                                            nullable=False, index=True)
+    provider: Mapped[str] = mapped_column(String, nullable=False)  # "google", "apple"
+    provider_user_id: Mapped[str] = mapped_column(String, nullable=False)
+    email: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False,
+                                                 default=_utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("provider", "provider_user_id",
+                         name="uq_identity_provider_user"),
+    )
 
 
 class Sync(Base):

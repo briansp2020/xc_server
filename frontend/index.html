@@ -6,61 +6,110 @@
   <title>Chadwick XC Training Dashboard</title>
   <link rel="stylesheet" href="/style.css" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
 <body>
   <header>
     <h1>Chadwick XC Training Dashboard</h1>
+    <div class="header-right" id="who" hidden>
+      <span id="whoName"></span>
+      <span class="badge badge-role" id="whoRole"></span>
+      <button class="linklike" id="signOutBtn">Sign out</button>
+    </div>
   </header>
-  <main>
-    <section class="hero">
-      <div class="hero-head">
-        <h2>This week</h2>
-        <span class="muted" id="weekRange"></span>
-      </div>
-      <div class="hero-grid">
-        <div class="stat-card">
-          <div class="label">Distance</div>
-          <div class="value" id="wkDistance">—</div>
-          <div class="delta flat" id="wkDistanceDelta"></div>
-        </div>
-        <div class="stat-card">
-          <div class="label">Time</div>
-          <div class="value" id="wkTime">—</div>
-          <div class="delta flat" id="wkTimeDelta"></div>
-        </div>
-        <div class="stat-card">
-          <div class="label">Runs</div>
-          <div class="value" id="wkRuns">—</div>
-          <div class="delta flat" id="wkRunsDelta"></div>
-        </div>
-      </div>
-    </section>
 
-    <section class="card">
-      <h2>Recent workouts</h2>
-      <table id="recentTable">
+  <!-- Signed-out state -->
+  <div id="signin" class="signin-overlay" hidden>
+    <div class="signin-card">
+      <h2 class="signin-title">Sign in</h2>
+      <p class="muted">Use your Google account to see your training.</p>
+      <div id="googleBtn"></div>
+      <p id="googleUnconfigured" class="muted" hidden>
+        Google sign-in isn't configured yet (set <code>GOOGLE_CLIENT_IDS</code> in <code>.env</code>).
+      </p>
+      <div id="devLogin" hidden>
+        <hr />
+        <p class="muted">Dev login (DEV_MODE only)</p>
+        <div class="dev-row">
+          <input id="devEmail" type="email" placeholder="any-email@test.com" />
+          <button id="devBtn">Sign in</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Signed-in state -->
+  <main id="appView" hidden>
+    <!-- Coach landing: roster -->
+    <section class="card" id="rosterView" hidden>
+      <h2>Athletes</h2>
+      <table id="rosterTable">
         <thead>
-          <tr>
-            <th>Date</th>
-            <th>Type</th>
-            <th class="num">Duration</th>
-            <th class="num">Distance</th>
-            <th class="num">Avg HR</th>
-            <th>Source</th>
-          </tr>
+          <tr><th>Name</th><th>Email</th><th>Role</th><th class="num">Grade</th></tr>
         </thead>
-        <tbody>
-          <tr><td colspan="6" class="muted">Loading&hellip;</td></tr>
-        </tbody>
+        <tbody></tbody>
       </table>
     </section>
 
-    <section class="card">
-      <h2>Weekly distance</h2>
-      <canvas id="weeklyChart" height="120"></canvas>
-      <p id="chartEmpty" class="muted" hidden>No distance data yet.</p>
-    </section>
+    <!-- Athlete dashboard (own data, or the athlete a coach selected) -->
+    <div id="dashView" hidden>
+      <div id="viewingBar" hidden>
+        <a class="back" href="#" id="backToRoster">&larr; Roster</a>
+        <span class="muted" id="viewingWho"></span>
+      </div>
+
+      <section class="hero">
+        <div class="hero-head">
+          <h2>This week</h2>
+          <span class="muted" id="weekRange"></span>
+        </div>
+        <div class="hero-grid">
+          <div class="stat-card">
+            <div class="label">Distance</div>
+            <div class="value" id="wkDistance">—</div>
+            <div class="delta flat" id="wkDistanceDelta"></div>
+          </div>
+          <div class="stat-card">
+            <div class="label">Time</div>
+            <div class="value" id="wkTime">—</div>
+            <div class="delta flat" id="wkTimeDelta"></div>
+          </div>
+          <div class="stat-card">
+            <div class="label">Runs</div>
+            <div class="value" id="wkRuns">—</div>
+            <div class="delta flat" id="wkRunsDelta"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Recent workouts</h2>
+        <table id="recentTable">
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Type</th>
+              <th class="num">Duration</th>
+              <th class="num">Distance</th>
+              <th class="num">Avg HR</th>
+              <th>Source</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td colspan="6" class="muted">Loading&hellip;</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="card">
+        <h2>Weekly distance</h2>
+        <canvas id="weeklyChart" height="120"></canvas>
+        <p id="chartEmpty" class="muted" hidden>No distance data yet.</p>
+      </section>
+    </div>
   </main>
+
+  <script src="/auth.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

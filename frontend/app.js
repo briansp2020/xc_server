@@ -1,5 +1,6 @@
 // The dashboard is a pure API client: it only fetches the JSON endpoints,
-// never touches the database directly.
+// never touches the database directly. All data calls carry our Bearer token
+// (see auth.js); athletes see their own data, coaches pick from the roster.
 
 const PT = "America/Los_Angeles";  // show all times in Pacific (PST/PDT)
 
@@ -32,12 +33,6 @@ function fmtTotalTime(sec) {
   const m = Math.round((sec % 3600) / 60);
   if (h > 0) return `${h}h ${String(m).padStart(2, "0")}m`;
   return `${m}m`;
-}
-
-async function getJSON(url) {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`${url} -> ${res.status}`);
-  return res.json();
 }
 
 // ---- This-week hero -----------------------------------------------------
@@ -134,14 +129,19 @@ function renderRecent(items) {
 
 // ---- Weekly chart -------------------------------------------------------
 
+let weeklyChart = null;  // destroyed on re-render when a coach switches athletes
+
 function renderWeeklyChart(weeks) {
   const canvas = document.getElementById("weeklyChart");
+  if (weeklyChart) { weeklyChart.destroy(); weeklyChart = null; }
   if (!weeks.length) {
     canvas.hidden = true;
     document.getElementById("chartEmpty").hidden = false;
     return;
   }
-  new Chart(canvas, {
+  canvas.hidden = false;
+  document.getElementById("chartEmpty").hidden = true;
+  weeklyChart = new Chart(canvas, {
     type: "line",
     data: {
       labels: weeks.map((w) => w.week_start),
@@ -163,22 +163,87 @@ function renderWeeklyChart(weeks) {
   });
 }
 
-// ---- Load everything ----------------------------------------------------
+// ---- Views ----------------------------------------------------------------
+
+// athleteId null = the signed-in athlete (server scopes by token).
+async function loadDashboard(athleteId) {
+  document.getElementById("rosterView").hidden = true;
+  document.getElementById("dashView").hidden = false;
+  const qs = athleteId != null ? `?athlete_id=${athleteId}` : "";
+  const [summary, sessions, workouts, weeks] = await Promise.all([
+    getJSONAuth("/stats/summary" + qs),
+    getJSONAuth("/sessions" + qs),
+    getJSONAuth("/workouts" + qs),
+    getJSONAuth("/stats/weekly" + qs),
+  ]);
+  renderSummary(summary);
+  renderRecent(buildRecent(sessions, workouts));
+  renderWeeklyChart(weeks);
+}
+
+async function showRoster() {
+  document.getElementById("dashView").hidden = true;
+  document.getElementById("rosterView").hidden = false;
+  const athletes = await getJSONAuth("/athletes");
+  const tbody = document.querySelector("#rosterTable tbody");
+  if (!athletes.length) {
+    tbody.innerHTML = `<tr><td colspan="4" class="muted">No athletes yet.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = athletes.map((a) => `
+    <tr class="clickable" data-id="${a.id}" data-name="${a.name}">
+      <td>${a.name}</td>
+      <td>${a.email || "—"}</td>
+      <td><span class="badge badge-role">${a.role}</span></td>
+      <td class="num">${a.grade ?? "—"}</td>
+    </tr>`).join("");
+  tbody.querySelectorAll("tr.clickable").forEach((tr) => {
+    tr.onclick = () => {
+      document.getElementById("viewingBar").hidden = false;
+      document.getElementById("viewingWho").textContent = "Viewing " + tr.dataset.name;
+      loadDashboard(Number(tr.dataset.id)).catch(console.error);
+    };
+  });
+}
+
+function renderHeader(me) {
+  document.getElementById("who").hidden = false;
+  document.getElementById("whoName").textContent = me.name;
+  document.getElementById("whoRole").textContent = me.role;
+  document.getElementById("signOutBtn").onclick = signOut;
+}
+
+// Exposed for auth.js's 401 fallback.
+function showSignIn() {
+  initAuth().then(({ config }) => renderSignIn(config));
+}
+
+// Signed-in entry point: used by the boot path below and by auth.js right
+// after a sign-in completes (no full page reload — see onSignedIn).
+async function enterApp(me) {
+  document.getElementById("signin").hidden = true;
+  renderHeader(me);
+  document.getElementById("appView").hidden = false;
+  document.getElementById("backToRoster").onclick = (e) => {
+    e.preventDefault();
+    document.getElementById("viewingBar").hidden = true;
+    showRoster().catch(console.error);
+  };
+  if (me.role === "coach") await showRoster();
+  else await loadDashboard(null);
+}
+
+// Called by auth.js with the athlete returned by the token exchange.
+function onSignedIn(athlete) {
+  enterApp(athlete).catch((err) => console.error("Failed to enter app:", err));
+}
 
 (async () => {
   try {
-    const [summary, sessions, workouts, weeks] = await Promise.all([
-      getJSON("/stats/summary"),
-      getJSON("/sessions"),
-      getJSON("/workouts"),
-      getJSON("/stats/weekly"),
-    ]);
-    renderSummary(summary);
-    renderRecent(buildRecent(sessions, workouts));
-    renderWeeklyChart(weeks);
+    const { config, me } = await initAuth();
+    if (!me) { renderSignIn(config); return; }
+    await enterApp(me);
   } catch (err) {
     console.error("Dashboard failed to load:", err);
-    document.querySelector("#recentTable tbody").innerHTML =
-      `<tr><td colspan="6" class="muted">Failed to load data — see console.</td></tr>`;
   }
 })();

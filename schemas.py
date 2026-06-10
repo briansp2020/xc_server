@@ -46,7 +46,9 @@ class Workout(BaseModel):
 class HealthSync(BaseModel):
     # Unknown `type` values are rejected with 422 (see doc "Versioning").
     type: Literal["health_sync"]
-    athlete_id: int
+    # DEPRECATED: ignored. The athlete is derived from the Bearer token so one
+    # athlete can never upload as another. Kept so older clients still parse.
+    athlete_id: int | None = None
     client_version: str | None = None
     uploaded_at: datetime
     source_platform: str
@@ -80,6 +82,37 @@ class HealthSync(BaseModel):
     sleep_rem_samples: list[IntervalSample] = []
     sleep_light_samples: list[IntervalSample] = []
     sleep_awake_samples: list[IntervalSample] = []
+
+
+# --- Auth ----------------------------------------------------------------------
+
+class GoogleLoginRequest(BaseModel):
+    id_token: str
+
+
+class DevLoginRequest(BaseModel):
+    """DEV_MODE only: identify an athlete by id or email (creates one for an
+    unknown email so tests can mint fake athletes instantly)."""
+    athlete_id: int | None = None
+    email: str | None = None
+    name: str | None = None
+
+
+class AthleteOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    email: str | None
+    role: str
+    grade: int | None
+    created_at: datetime
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    athlete: AthleteOut
 
 
 # --- Outgoing responses --------------------------------------------------------

@@ -13,6 +13,9 @@
 
 * { box-sizing: border-box; }
 
+/* The hidden attribute must always win, even over display:flex rules. */
+[hidden] { display: none !important; }
+
 body {
   margin: 0;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
@@ -34,6 +37,64 @@ header {
 }
 
 h1 { margin: 0; font-size: 18px; font-weight: 700; letter-spacing: -0.01em; }
+
+header { justify-content: space-between; }
+.header-right { display: flex; align-items: center; gap: 10px; font-size: 14px; }
+
+.linklike {
+  border: none;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 0;
+}
+.linklike:hover { text-decoration: underline; }
+
+/* --- sign-in screen ----------------------------------------------------- */
+
+.signin-overlay {
+  display: flex;
+  justify-content: center;
+  padding: 64px 20px;
+}
+.signin-card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 32px;
+  box-shadow: var(--shadow);
+  width: 100%;
+  max-width: 380px;
+  text-align: center;
+}
+.signin-title { margin: 0 0 6px; font-size: 20px; }
+.signin-card #googleBtn { display: flex; justify-content: center; margin-top: 18px; }
+.signin-card hr { border: none; border-top: 1px solid var(--line); margin: 20px 0 10px; }
+.dev-row { display: flex; gap: 8px; }
+.dev-row input {
+  flex: 1;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font: inherit;
+}
+.dev-row button {
+  padding: 8px 14px;
+  border: none;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+#viewingBar { display: flex; align-items: baseline; gap: 12px; }
+
+.badge-role { background: #eef1f5; color: #4a5868; text-transform: capitalize; }
 
 main {
   max-width: 960px;

@@ -116,9 +116,13 @@ async function load() {
     detail.innerHTML = `<p class="muted">No session id in the URL.</p>`;
     return;
   }
-  const res = await fetch(`/sessions/${encodeURIComponent(sessionId)}`);
+  const res = await authFetch(`/sessions/${encodeURIComponent(sessionId)}`);
   if (res.status === 404) {
     detail.innerHTML = `<p class="muted">Session not found.</p>`;
+    return;
+  }
+  if (res.status === 403) {
+    detail.innerHTML = `<p class="muted">You don't have access to this session.</p>`;
     return;
   }
   if (!res.ok) throw new Error(`/sessions/${sessionId} -> ${res.status}`);

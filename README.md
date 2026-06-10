@@ -38,8 +38,15 @@ The SQLite file `xc_training.db` is created automatically on first start.
 
 ## API
 
+All data endpoints require `Authorization: Bearer <jwt>` (sign in via
+`POST /auth/google`, or `POST /auth/dev-login` when `DEV_MODE=true`; copy
+`.env.example` to `.env` first). See `CLAUDE.md` "Auth" and `PRIVACY.md`.
+
 | Method | Path | Purpose |
 |---|---|---|
+| `POST` | `/auth/google` | Exchange a Google ID token for the server's JWT. |
+| `GET` | `/auth/me` | The signed-in athlete (id, name, role). |
+| `GET` | `/athletes` | Roster (coach role only). |
 | `POST` | `/workouts` | Ingest a `health_sync` payload (the app's upload). Stores the full sync and upserts workout summaries. |
 | `GET` | `/workouts` | List stored workouts (newest first; optional `?athlete_id=`). |
 | `GET` | `/workouts/{source_uuid}` | One workout with its sliced sample streams. |

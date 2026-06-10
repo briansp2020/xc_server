@@ -10,9 +10,14 @@ from sqlalchemy import delete, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session, load_only
 
+import config
+from auth import (authorize_athlete_access, create_access_token,
+                  get_current_athlete, get_or_create_athlete_for_identity,
+                  verify_google_id_token)
 from database import Base, engine, get_db
 from detection import DETECTION_VERSION, detect_sessions, parse_utc
-from models import DetectedSession, HeartRateSample, IntervalSample, Sync, Workout
+from models import (Athlete, DetectedSession, HeartRateSample, IntervalSample,
+                    Sync, Workout)
 import schemas
 
 FRONTEND_DIR = Path(__file__).parent / "frontend"
@@ -32,6 +37,63 @@ app = FastAPI(lifespan=lifespan)
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+# --- Auth (public routes) ----------------------------------------------------
+
+@app.get("/auth/config")
+def auth_config():
+    """Public client bootstrap: which sign-in options exist. The web client ID
+    is public by design (it's embedded in every Google sign-in button)."""
+    return {
+        "google_client_id": config.GOOGLE_CLIENT_IDS[0] if config.GOOGLE_CLIENT_IDS else None,
+        "dev_mode": config.DEV_MODE,
+    }
+
+
+@app.post("/auth/google", response_model=schemas.TokenResponse)
+def auth_google(body: schemas.GoogleLoginRequest, db: Session = Depends(get_db)):
+    """Exchange a Google ID token (verified server-side against Google's keys)
+    for our own JWT. First sign-in creates the athlete + identity."""
+    claims = verify_google_id_token(body.id_token)
+    athlete = get_or_create_athlete_for_identity(
+        db, provider="google", provider_user_id=claims["sub"],
+        email=claims.get("email"), name=claims.get("name"))
+    return schemas.TokenResponse(
+        access_token=create_access_token(athlete.id), athlete=athlete)
+
+
+if config.DEV_MODE:
+    # Registered ONLY in DEV_MODE — the route does not exist otherwise.
+    @app.post("/auth/dev-login", response_model=schemas.TokenResponse)
+    def auth_dev_login(body: schemas.DevLoginRequest,
+                       db: Session = Depends(get_db)):
+        """Mint a JWT for any athlete without Google. Unknown email creates a
+        fresh athlete so tests can fabricate users instantly."""
+        athlete = None
+        if body.athlete_id is not None:
+            athlete = db.get(Athlete, body.athlete_id)
+            if athlete is None:
+                raise HTTPException(status_code=404, detail="No such athlete")
+        elif body.email:
+            athlete = db.scalar(select(Athlete).where(Athlete.email == body.email))
+            if athlete is None:
+                athlete = Athlete(name=body.name or body.email,
+                                  email=body.email, role="athlete")
+                db.add(athlete)
+                db.commit()
+                db.refresh(athlete)
+        else:
+            raise HTTPException(status_code=422,
+                                detail="Provide athlete_id or email")
+        return schemas.TokenResponse(
+            access_token=create_access_token(athlete.id), athlete=athlete)
+
+
+@app.get("/auth/me", response_model=schemas.AthleteOut)
+def auth_me(current: Athlete = Depends(get_current_athlete)):
+    """Who am I? Used by the dashboard to route athlete vs coach views."""
+    return current
 
 
 # Columns overwritten when a workout with an existing source_uuid is re-uploaded.
@@ -82,11 +144,22 @@ _INTERVAL_STREAM_FIELDS = {
 }
 
 
-def _store_samples(db: Session, payload: schemas.HealthSync) -> None:
+def _scope_athlete(current: Athlete, requested: int | None) -> int | None:
+    """Resolve which athlete a read endpoint may serve. Athletes are pinned to
+    themselves (403 if they ask for someone else); coaches may request any
+    athlete, or None for all."""
+    if current.role == "coach":
+        return requested
+    if requested is not None and requested != current.id:
+        raise HTTPException(status_code=403,
+                            detail="You may only access your own data")
+    return current.id
+
+
+def _store_samples(db: Session, payload: schemas.HealthSync, aid: int) -> None:
     """Fan the raw streams into the typed tables, deduped by their natural key
     (HR by (uuid, time); intervals by uuid). Re-uploads upsert in place, so the
     same sample is stored once no matter how many times it's sent."""
-    aid = payload.athlete_id
 
     # Heart rate -> heart_rate_samples (dedup within batch by (uuid, time)).
     hr_rows: dict[tuple, dict] = {}
@@ -243,11 +316,17 @@ def run_detection_for_athlete(db: Session, athlete_id: int) -> int:
 
 
 @app.post("/workouts", status_code=201)
-def ingest_sync(payload: schemas.HealthSync, db: Session = Depends(get_db)):
+def ingest_sync(payload: schemas.HealthSync,
+                current: Athlete = Depends(get_current_athlete),
+                db: Session = Depends(get_db)):
+    # The athlete comes from the Bearer token — NEVER from the request body —
+    # so one athlete cannot upload as another. payload.athlete_id is ignored.
+    aid = current.id
+
     # 1. Record the sync (metadata + workouts only; the bulk streams live,
     #    deduped, in the typed tables instead of being copied here every upload).
     sync = Sync(
-        athlete_id=payload.athlete_id,
+        athlete_id=aid,
         uploaded_at=payload.uploaded_at,
         window_start=payload.window_start,
         window_end=payload.window_end,
@@ -258,7 +337,7 @@ def ingest_sync(payload: schemas.HealthSync, db: Session = Depends(get_db)):
     db.add(sync)
 
     # 2. Fan the raw streams into the typed tables, deduped by their keys.
-    _store_samples(db, payload)
+    _store_samples(db, payload, aid)
 
     # 3. Upsert workout summaries, slicing the global streams to each window so
     #    the dashboard/detail view keep working. Dedup within the batch (last
@@ -270,7 +349,7 @@ def ingest_sync(payload: schemas.HealthSync, db: Session = Depends(get_db)):
                    if s.get("value") is not None]
         rows_by_uuid[w.source_uuid] = {
             "source_uuid": w.source_uuid,
-            "athlete_id": payload.athlete_id,
+            "athlete_id": aid,
             "source_app": w.source_app,
             "activity_type": w.activity_type,
             "recording_method": w.recording_method,
@@ -299,10 +378,11 @@ def ingest_sync(payload: schemas.HealthSync, db: Session = Depends(get_db)):
     db.commit()  # sync, samples, and workouts persisted
 
     # 4. Detect exercise sessions from the deduped streams (incl. untagged ones).
-    detected = run_detection_for_athlete(db, payload.athlete_id)
+    detected = run_detection_for_athlete(db, aid)
     db.commit()
 
     return {
+        "athlete_id": aid,
         "received_workouts": len(rows),
         "received_hr_samples": len(payload.heart_rate_samples),
         "received_step_samples": len(payload.step_samples),
@@ -311,7 +391,10 @@ def ingest_sync(payload: schemas.HealthSync, db: Session = Depends(get_db)):
 
 
 @app.get("/workouts", response_model=list[schemas.WorkoutSummary])
-def list_workouts(athlete_id: int | None = None, db: Session = Depends(get_db)):
+def list_workouts(athlete_id: int | None = None,
+                  current: Athlete = Depends(get_current_athlete),
+                  db: Session = Depends(get_db)):
+    athlete_id = _scope_athlete(current, athlete_id)
     # load_only the summary columns so the list doesn't deserialize each
     # workout's raw_payload (avg/max HR are columns now, not derived from it).
     query = (
@@ -357,7 +440,10 @@ def _activity_entries(db: Session, athlete_id: int | None):
 
 
 @app.get("/stats/weekly", response_model=list[schemas.WeeklyDistance])
-def weekly_distance(athlete_id: int | None = None, db: Session = Depends(get_db)):
+def weekly_distance(athlete_id: int | None = None,
+                    current: Athlete = Depends(get_current_athlete),
+                    db: Session = Depends(get_db)):
+    athlete_id = _scope_athlete(current, athlete_id)
     totals: dict[date, float] = defaultdict(float)
     for start_time, _dur, distance, _act in _activity_entries(db, athlete_id):
         d = _pacific_date(start_time)
@@ -371,9 +457,12 @@ def weekly_distance(athlete_id: int | None = None, db: Session = Depends(get_db)
 
 
 @app.get("/stats/summary", response_model=schemas.WeeklySummary)
-def weekly_summary(athlete_id: int | None = None, db: Session = Depends(get_db)):
+def weekly_summary(athlete_id: int | None = None,
+                   current: Athlete = Depends(get_current_athlete),
+                   db: Session = Depends(get_db)):
     """This week vs the athlete's own previous week (Pacific weeks, Monday
     start). Comparisons are always within one athlete's history."""
+    athlete_id = _scope_athlete(current, athlete_id)
     today = datetime.now(timezone.utc).astimezone(PACIFIC).date()
     this_monday = today - timedelta(days=today.weekday())
     last_monday = this_monday - timedelta(days=7)
@@ -409,16 +498,24 @@ def weekly_summary(athlete_id: int | None = None, db: Session = Depends(get_db))
 
 
 @app.get("/workouts/{source_uuid}", response_model=schemas.WorkoutDetail)
-def get_workout(source_uuid: str, db: Session = Depends(get_db)):
+def get_workout(source_uuid: str,
+                current: Athlete = Depends(get_current_athlete),
+                db: Session = Depends(get_db)):
     workout = db.get(Workout, source_uuid)
     if workout is None:
         raise HTTPException(status_code=404, detail="Workout not found")
+    authorize_athlete_access(current, workout.athlete_id)
     return workout
 
 
 @app.post("/detect")
-def redetect(athlete_id: int | None = None, db: Session = Depends(get_db)):
-    """Re-run detection against already-stored samples (no client re-upload)."""
+def redetect(athlete_id: int | None = None,
+             current: Athlete = Depends(get_current_athlete),
+             db: Session = Depends(get_db)):
+    """Re-run detection against already-stored samples (no client re-upload).
+    Athletes reprocess themselves; coaches may pass any athlete_id (or none
+    for everyone)."""
+    athlete_id = _scope_athlete(current, athlete_id)
     q = select(HeartRateSample.athlete_id).distinct()
     if athlete_id is not None:
         q = q.where(HeartRateSample.athlete_id == athlete_id)
@@ -431,7 +528,10 @@ def redetect(athlete_id: int | None = None, db: Session = Depends(get_db)):
 
 
 @app.get("/sessions", response_model=list[schemas.SessionSummary])
-def list_sessions(athlete_id: int | None = None, db: Session = Depends(get_db)):
+def list_sessions(athlete_id: int | None = None,
+                  current: Athlete = Depends(get_current_athlete),
+                  db: Session = Depends(get_db)):
+    athlete_id = _scope_athlete(current, athlete_id)
     query = select(DetectedSession).order_by(DetectedSession.start_time.desc())
     if athlete_id is not None:
         query = query.where(DetectedSession.athlete_id == athlete_id)
@@ -439,11 +539,23 @@ def list_sessions(athlete_id: int | None = None, db: Session = Depends(get_db)):
 
 
 @app.get("/sessions/{session_id}", response_model=schemas.SessionDetail)
-def get_session(session_id: int, db: Session = Depends(get_db)):
+def get_session(session_id: int,
+                current: Athlete = Depends(get_current_athlete),
+                db: Session = Depends(get_db)):
     session = db.get(DetectedSession, session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
+    authorize_athlete_access(current, session.athlete_id)
     return session
+
+
+@app.get("/athletes", response_model=list[schemas.AthleteOut])
+def list_athletes(current: Athlete = Depends(get_current_athlete),
+                  db: Session = Depends(get_db)):
+    """Coach-only roster, used by the dashboard's coach view."""
+    if current.role != "coach":
+        raise HTTPException(status_code=403, detail="Coaches only")
+    return db.scalars(select(Athlete).order_by(Athlete.name)).all()
 
 
 class NoCacheStaticFiles(StaticFiles):
