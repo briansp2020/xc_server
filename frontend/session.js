@@ -98,12 +98,39 @@ function renderHrChart(raw) {
   });
 }
 
+// Moving-average window for smoothing the *displayed* GPS path. Mirrors the
+// phone app's smoothPath (lib/main.dart): raw points stay intact in the DB/API;
+// only the drawn polyline is smoothed. Higher = smoother but rounds corners; 1
+// disables. Keep in sync with _pathSmoothingWindow on the phone.
+const PATH_SMOOTHING_WINDOW = 7;
+
+// Centered moving average over lat/lng; endpoints preserved (the window shrinks
+// at the edges). A direct port of smoothPath() in the phone app, so the
+// dashboard draws the same path the athlete saw while recording.
+function smoothPath(latlngs, window = PATH_SMOOTHING_WINDOW) {
+  if (latlngs.length <= 2 || window < 2) return latlngs;
+  const half = Math.floor(window / 2);
+  const out = [];
+  for (let i = 0; i < latlngs.length; i++) {
+    let lat = 0, lng = 0, n = 0;
+    for (let j = i - half; j <= i + half; j++) {
+      if (j < 0 || j >= latlngs.length) continue;
+      lat += latlngs[j][0];
+      lng += latlngs[j][1];
+      n++;
+    }
+    out.push([lat / n, lng / n]);
+  }
+  return out;
+}
+
 // Draw the DIY GPS route (if one overlaps this session) as a polyline with
-// start/end markers. Uses Leaflet + OpenStreetMap tiles (no API key).
+// start/end markers. Uses Leaflet + OpenStreetMap tiles (no API key). The drawn
+// path is smoothed (see smoothPath) to match the phone; raw points are unchanged.
 function renderRouteMap(route) {
   if (!route || !route.points || route.points.length === 0) return;
 
-  const latlngs = route.points.map((p) => [p.lat, p.lng]);
+  const latlngs = smoothPath(route.points.map((p) => [p.lat, p.lng]));
   document.getElementById("mapCard").hidden = false;
 
   const map = L.map("routeMap");
