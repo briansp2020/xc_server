@@ -4,8 +4,10 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Session &middot; XC Training</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css" />
   <link rel="stylesheet" href="/style.css" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
 </head>
 <body>
   <header><h1>Chadwick XC Training Dashboard</h1></header>
@@ -14,6 +16,26 @@
 
     <section class="card" id="detail">
       <p class="muted">Loading&hellip;</p>
+    </section>
+
+    <section class="card" id="mapCard" hidden>
+      <h2>Route</h2>
+      <div class="map-wrap">
+        <div id="routeMap"></div>
+        <button id="fitRouteBtn" class="map-btn" type="button" hidden
+                title="Show whole route" aria-label="Show whole route">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none"
+               stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <circle cx="12" cy="12" r="6"></circle>
+            <circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"></circle>
+            <line x1="12" y1="2" x2="12" y2="5"></line>
+            <line x1="12" y1="19" x2="12" y2="22"></line>
+            <line x1="2" y1="12" x2="5" y2="12"></line>
+            <line x1="19" y1="12" x2="22" y2="12"></line>
+          </svg>
+        </button>
+      </div>
+      <p id="routeMeta" class="muted"></p>
     </section>
 
     <section class="card" id="hrCard" hidden>

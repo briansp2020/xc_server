@@ -15,7 +15,8 @@ from auth import (authorize_athlete_access, create_access_token,
                   get_current_athlete, get_or_create_athlete_for_identity,
                   verify_google_id_token)
 from database import Base, engine, get_db
-from detection import DETECTION_VERSION, detect_sessions, parse_utc
+from detection import (DETECTION_VERSION, detect_sessions, parse_utc,
+                       session_from_route)
 from models import (Athlete, DetectedSession, HeartRateSample, IntervalSample,
                     RouteTrack, Sync, Workout)
 import schemas
@@ -288,7 +289,7 @@ def run_detection_for_athlete(db: Session, athlete_id: int) -> int:
     db.execute(delete(DetectedSession)
                .where(DetectedSession.athlete_id == athlete_id))
 
-    for s in sessions:
+    def write_session(s):
         match = next(
             (w for w in workouts
              if _overlaps(s.start, s.end, w.start_time, w.end_time)), None)
@@ -312,7 +313,27 @@ def run_detection_for_athlete(db: Session, athlete_id: int) -> int:
             detection_version=DETECTION_VERSION,
             raw_payload=sliced,
         ))
-    return len(sessions)
+
+    for s in sessions:
+        write_session(s)
+
+    # DIY GPS routes are explicit, user-started workouts, so each one ALWAYS
+    # becomes a session (the HR heuristic skips easy efforts). Skip a route that
+    # already overlaps an HR-detected session — that session covers it and the
+    # route attaches to it via /sessions/{id}/route.
+    routes = db.scalars(
+        select(RouteTrack).where(RouteTrack.athlete_id == athlete_id)).all()
+    for r in routes:
+        if any(_overlaps(r.start_time, r.end_time, s.start, s.end) for s in sessions):
+            continue
+        rs = session_from_route(r.start_time, r.end_time, hr_samples,
+                                step_samples, distance_meters=r.distance_meters)
+        write_session(rs)
+
+    return len(sessions) + sum(
+        1 for r in routes
+        if not any(_overlaps(r.start_time, r.end_time, s.start, s.end)
+                   for s in sessions))
 
 
 @app.post("/workouts", status_code=201)
@@ -567,8 +588,11 @@ def ingest_route(payload: schemas.RouteTrack,
     """Store one DIY GPS track. The athlete comes from the Bearer token — never
     the body. Upsert by client_route_id so a retried upload doesn't duplicate."""
     aid = current.id
+    # The client doesn't always send client_route_id yet; fall back to a stable
+    # key derived from (athlete_id, start_time) so re-uploads still dedup.
+    crid = payload.client_route_id or f"diy:{aid}:{payload.start_time.isoformat()}"
     row = {
-        "client_route_id": payload.client_route_id,
+        "client_route_id": crid,
         "athlete_id": aid,
         "source": payload.source,
         "start_time": payload.start_time,
@@ -591,8 +615,12 @@ def ingest_route(payload: schemas.RouteTrack,
     )
     db.execute(stmt)
     db.commit()
-    return {"client_route_id": payload.client_route_id,
-            "received_points": len(payload.points)}
+
+    # A DIY route always becomes a session so it's visible on the dashboard with
+    # its map — re-run detection (which now folds routes in) for this athlete.
+    run_detection_for_athlete(db, aid)
+    db.commit()
+    return {"client_route_id": crid, "received_points": len(payload.points)}
 
 
 @app.get("/routes", response_model=list[schemas.RouteSummary])

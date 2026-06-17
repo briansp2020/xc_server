@@ -252,6 +252,36 @@ tbody tr.clickable { cursor: pointer; }
   font-variant-numeric: tabular-nums;
 }
 
+/* --- route map (session.html) ------------------------------------------ */
+
+.map-wrap { position: relative; }
+#routeMap {
+  height: 360px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+}
+/* Square icon button; sits above Leaflet tiles/controls (panes ~400, ctrls ~1000). */
+.map-btn {
+  position: absolute;
+  bottom: 10px;
+  right: 10px;
+  z-index: 1000;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--ink);
+  cursor: pointer;
+  box-shadow: var(--shadow);
+}
+.map-btn:hover { background: var(--bg); }
+#routeMeta { margin: 12px 0 0; font-size: 13px; }
+
 .chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .chip {
   background: var(--bg);

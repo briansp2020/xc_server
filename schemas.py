@@ -58,7 +58,9 @@ class RouteTrack(BaseModel):
     /routes — separate from the health sync. Deduped by client_route_id."""
     # Unknown `type` values are rejected with 422 (see doc "Versioning").
     type: Literal["route_track"]
-    client_route_id: str  # client-generated UUID; the dedup key
+    # The client doesn't send this yet; until it does, the server synthesizes a
+    # stable key from (athlete_id, start_time). See doc "Route tracks > Dedup".
+    client_route_id: str | None = None
     source: str           # "diy_gps"
     client_version: str | None = None
     recorded_at: datetime

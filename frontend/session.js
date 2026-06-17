@@ -98,6 +98,48 @@ function renderHrChart(raw) {
   });
 }
 
+// Draw the DIY GPS route (if one overlaps this session) as a polyline with
+// start/end markers. Uses Leaflet + OpenStreetMap tiles (no API key).
+function renderRouteMap(route) {
+  if (!route || !route.points || route.points.length === 0) return;
+
+  const latlngs = route.points.map((p) => [p.lat, p.lng]);
+  document.getElementById("mapCard").hidden = false;
+
+  const map = L.map("routeMap");
+  // Attribution to bottom-left so it doesn't sit under the bottom-right button.
+  map.attributionControl.setPosition("bottomleft");
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19,
+    attribution: "&copy; OpenStreetMap contributors",
+  }).addTo(map);
+
+  L.polyline(latlngs, { color: "#2f6fed", weight: 4 }).addTo(map);
+
+  // Circle markers (no image assets, so no Leaflet default-icon path issues).
+  const ends = [[latlngs[0], "#177245", "Start"],
+                [latlngs[latlngs.length - 1], "#b3261e", "End"]];
+  for (const [pos, color, label] of ends) {
+    L.circleMarker(pos, {
+      radius: 6, color: "#fff", weight: 2, fillColor: color, fillOpacity: 1,
+    }).addTo(map).bindTooltip(label);
+  }
+
+  // The initial "show the whole route" view; the Fit-route button replays it.
+  const fitWholeRoute = () => {
+    if (latlngs.length === 1) map.setView(latlngs[0], 16);
+    else map.fitBounds(latlngs, { padding: [24, 24] });
+  };
+  fitWholeRoute();
+
+  const fitBtn = document.getElementById("fitRouteBtn");
+  fitBtn.hidden = false;
+  fitBtn.onclick = fitWholeRoute;
+
+  document.getElementById("routeMeta").textContent =
+    `${fmtKm(route.distance_meters)} · ${route.point_count.toLocaleString()} GPS points`;
+}
+
 function renderSampleChips(raw) {
   const chips = Object.entries(SAMPLE_LABELS)
     .map(([key, label]) => {
@@ -132,6 +174,15 @@ async function load() {
   renderHeader(s);
   renderHrChart(raw);
   renderSampleChips(raw);
+
+  // Route is a separate fetch (reconciled server-side by time overlap). A
+  // failure here shouldn't blank the rest of the page.
+  try {
+    const routeRes = await authFetch(`/sessions/${encodeURIComponent(sessionId)}/route`);
+    if (routeRes.ok) renderRouteMap(await routeRes.json());
+  } catch (err) {
+    console.error("Failed to load route:", err);
+  }
 }
 
 load().catch((err) => {

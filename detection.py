@@ -94,6 +94,64 @@ def _minute_max_from_primary_source(samples) -> dict:
     return by_min
 
 
+RUN_SPEED_MPS = 2.0      # >= this average GPS speed => RUNNING, else WALKING
+
+
+def session_from_route(start, end, hr_samples, step_samples,
+                       distance_meters=None) -> Session:
+    """Build a Session for an explicit DIY GPS route window.
+
+    Unlike detect_sessions, this ALWAYS produces a session: a recorded GPS track
+    is a user-started workout (ground truth), not something to gate on the HR
+    threshold. HR/step stats are computed the same way (per-minute HR medians,
+    primary-source step dedup); distance prefers the GPS total, and the activity
+    is classified by average GPS speed when distance is known.
+    """
+    start, end = parse_utc(start), parse_utc(end)
+    duration_s = (end - start).total_seconds()
+    duration_min = duration_s / 60 or 1
+
+    hr_by_min: dict[datetime, list[float]] = {}
+    sources: set = set()
+    for s in hr_samples:
+        v = s.get("value")
+        if v is None:
+            continue
+        t = parse_utc(s["time"])
+        if start <= t < end:
+            hr_by_min.setdefault(_floor_minute(t), []).append(v)
+            if s.get("source"):
+                sources.add(s["source"])
+    hr_meds = [median(v) for v in hr_by_min.values()]
+
+    steps_by_min = _minute_max_from_primary_source(
+        [s for s in step_samples if start <= parse_utc(s["start"]) < end])
+    total_steps = sum(steps_by_min.values())
+    avg_spm = total_steps / duration_min if duration_min else 0
+
+    if distance_meters and duration_s:
+        activity = "RUNNING" if distance_meters / duration_s >= RUN_SPEED_MPS else "WALKING"
+    else:
+        activity = "RUNNING" if avg_spm >= RUN_CADENCE_SPM else "WALKING"
+
+    minutes = int(duration_min) or 1
+    coverage = min(len(hr_by_min) / minutes * 100, 100.0)
+
+    return Session(
+        start=start,
+        end=end,
+        duration_seconds=int(duration_s),
+        peak_hr=round(max(hr_meds)) if hr_meds else None,
+        avg_hr=round(mean(hr_meds)) if hr_meds else None,
+        total_steps=int(total_steps),
+        avg_steps_per_min=round(avg_spm, 1),
+        total_distance_meters=round(distance_meters) if distance_meters else None,
+        inferred_activity=activity,
+        hr_coverage_pct=round(coverage, 1),
+        hr_source_count=len(sources),
+    )
+
+
 def detect_sessions(hr_samples, step_samples, distance_samples=None,
                     resting_hr: int = RESTING_HR,
                     max_hr: int = MAX_HR) -> list[Session]:
