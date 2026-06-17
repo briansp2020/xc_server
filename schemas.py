@@ -43,6 +43,33 @@ class Workout(BaseModel):
     total_steps: int | None = None
 
 
+class TrackPoint(BaseModel):
+    """One GPS fix from a DIY route recording (see doc "Route tracks")."""
+    lat: float
+    lng: float
+    time: datetime
+    accuracy_m: float | None = None
+    altitude_m: float | None = None
+    speed_mps: float | None = None
+
+
+class RouteTrack(BaseModel):
+    """A full per-point GPS track the app recorded on-device and POSTs to
+    /routes — separate from the health sync. Deduped by client_route_id."""
+    # Unknown `type` values are rejected with 422 (see doc "Versioning").
+    type: Literal["route_track"]
+    client_route_id: str  # client-generated UUID; the dedup key
+    source: str           # "diy_gps"
+    client_version: str | None = None
+    recorded_at: datetime
+    start_time: datetime
+    end_time: datetime
+    duration_seconds: int
+    distance_meters: float | None = None
+    point_count: int
+    points: list[TrackPoint] = []
+
+
 class HealthSync(BaseModel):
     # Unknown `type` values are rejected with 422 (see doc "Versioning").
     type: Literal["health_sync"]
@@ -189,3 +216,25 @@ class SessionSummary(BaseModel):
 class SessionDetail(SessionSummary):
     """A detected session including its sliced streams (for the detail chart)."""
     raw_payload: dict[str, Any]
+
+
+# --- Route tracks --------------------------------------------------------------
+
+class RouteSummary(BaseModel):
+    """A stored route without the (potentially large) points array."""
+    model_config = ConfigDict(from_attributes=True)
+
+    client_route_id: str
+    athlete_id: int
+    source: str
+    start_time: datetime
+    end_time: datetime
+    duration_seconds: int
+    distance_meters: float | None
+    point_count: int
+    uploaded_at: datetime
+
+
+class RouteDetail(RouteSummary):
+    """A single route including its GPS points (the polyline to draw)."""
+    points: list[TrackPoint]

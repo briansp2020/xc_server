@@ -17,7 +17,7 @@ from auth import (authorize_athlete_access, create_access_token,
 from database import Base, engine, get_db
 from detection import DETECTION_VERSION, detect_sessions, parse_utc
 from models import (Athlete, DetectedSession, HeartRateSample, IntervalSample,
-                    Sync, Workout)
+                    RouteTrack, Sync, Workout)
 import schemas
 
 FRONTEND_DIR = Path(__file__).parent / "frontend"
@@ -556,6 +556,98 @@ def list_athletes(current: Athlete = Depends(get_current_athlete),
     if current.role != "coach":
         raise HTTPException(status_code=403, detail="Coaches only")
     return db.scalars(select(Athlete).order_by(Athlete.name)).all()
+
+
+# --- Route tracks (DIY GPS recording — see docs/SERVER_SCHEMA.md) -------------
+
+@app.post("/routes", status_code=201)
+def ingest_route(payload: schemas.RouteTrack,
+                 current: Athlete = Depends(get_current_athlete),
+                 db: Session = Depends(get_db)):
+    """Store one DIY GPS track. The athlete comes from the Bearer token — never
+    the body. Upsert by client_route_id so a retried upload doesn't duplicate."""
+    aid = current.id
+    row = {
+        "client_route_id": payload.client_route_id,
+        "athlete_id": aid,
+        "source": payload.source,
+        "start_time": payload.start_time,
+        "end_time": payload.end_time,
+        "duration_seconds": payload.duration_seconds,
+        "distance_meters": payload.distance_meters,
+        "point_count": payload.point_count,
+        "uploaded_at": datetime.now(timezone.utc).replace(tzinfo=None),
+        "raw_payload": payload.model_dump(mode="json"),
+    }
+    stmt = sqlite_insert(RouteTrack).values(row)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[RouteTrack.client_route_id],
+        # Re-key to the uploading athlete too, so a route can't be silently
+        # overwritten under someone else's id (client_route_id is a UUID, so a
+        # cross-athlete collision shouldn't happen — this just makes it safe).
+        set_={c: row[c] for c in (
+            "athlete_id", "source", "start_time", "end_time", "duration_seconds",
+            "distance_meters", "point_count", "uploaded_at", "raw_payload")},
+    )
+    db.execute(stmt)
+    db.commit()
+    return {"client_route_id": payload.client_route_id,
+            "received_points": len(payload.points)}
+
+
+@app.get("/routes", response_model=list[schemas.RouteSummary])
+def list_routes(athlete_id: int | None = None,
+                current: Athlete = Depends(get_current_athlete),
+                db: Session = Depends(get_db)):
+    athlete_id = _scope_athlete(current, athlete_id)
+    # load_only the summary columns so the list skips the big points payload.
+    cols = ("client_route_id", "athlete_id", "source", "start_time", "end_time",
+            "duration_seconds", "distance_meters", "point_count", "uploaded_at")
+    query = (select(RouteTrack)
+             .options(load_only(*(getattr(RouteTrack, c) for c in cols)))
+             .order_by(RouteTrack.start_time.desc()))
+    if athlete_id is not None:
+        query = query.where(RouteTrack.athlete_id == athlete_id)
+    return db.scalars(query).all()
+
+
+def _route_to_detail(route: RouteTrack) -> schemas.RouteDetail:
+    """A stored route + its points (pulled from raw_payload) for the map."""
+    return schemas.RouteDetail(
+        client_route_id=route.client_route_id, athlete_id=route.athlete_id,
+        source=route.source, start_time=route.start_time, end_time=route.end_time,
+        duration_seconds=route.duration_seconds,
+        distance_meters=route.distance_meters, point_count=route.point_count,
+        uploaded_at=route.uploaded_at,
+        points=route.raw_payload.get("points", []))
+
+
+@app.get("/routes/{client_route_id}", response_model=schemas.RouteDetail)
+def get_route(client_route_id: str,
+              current: Athlete = Depends(get_current_athlete),
+              db: Session = Depends(get_db)):
+    route = db.get(RouteTrack, client_route_id)
+    if route is None:
+        raise HTTPException(status_code=404, detail="Route not found")
+    authorize_athlete_access(current, route.athlete_id)
+    return _route_to_detail(route)
+
+
+@app.get("/sessions/{session_id}/route", response_model=schemas.RouteDetail | None)
+def get_session_route(session_id: int,
+                      current: Athlete = Depends(get_current_athlete),
+                      db: Session = Depends(get_db)):
+    """The DIY route whose time window overlaps this detected session (the GPS
+    path for the session detail map), or null if none. Reconciled at read time."""
+    session = db.get(DetectedSession, session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    authorize_athlete_access(current, session.athlete_id)
+    routes = db.scalars(select(RouteTrack).where(
+        RouteTrack.athlete_id == session.athlete_id)).all()
+    match = next((r for r in routes if _overlaps(
+        session.start_time, session.end_time, r.start_time, r.end_time)), None)
+    return _route_to_detail(match) if match else None
 
 
 class NoCacheStaticFiles(StaticFiles):

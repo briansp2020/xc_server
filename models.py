@@ -148,6 +148,32 @@ class Workout(Base):
     )
 
 
+class RouteTrack(Base):
+    """A DIY GPS route the app recorded on-device and uploaded (see doc "Route
+    tracks"). Deduped by client_route_id; the points[] live in raw_payload,
+    which is enough to draw the polyline."""
+    __tablename__ = "route_tracks"
+
+    # Client-generated UUID and dedup key: re-uploads of the same track carry
+    # the same id and upsert this row (lets the client retry a flaky upload).
+    client_route_id: Mapped[str] = mapped_column(String, primary_key=True)
+    athlete_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    source: Mapped[str] = mapped_column(String, nullable=False)  # "diy_gps"
+    start_time: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    end_time: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    duration_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
+    distance_meters: Mapped[float | None] = mapped_column(Float, nullable=True)
+    point_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    uploaded_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+    # The whole track incl. points[] (lat/lng/time/accuracy/altitude/speed).
+    raw_payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+    __table_args__ = (
+        Index("ix_route_tracks_athlete_start", "athlete_id", "start_time"),
+    )
+
+
 class DetectedSession(Base):
     """A workout session inferred from raw HR + step streams (see detection.py).
     Replaced wholesale per athlete on each (re)detection run."""
