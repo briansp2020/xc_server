@@ -24,6 +24,15 @@ import schemas
 FRONTEND_DIR = Path(__file__).parent / "frontend"
 PACIFIC = ZoneInfo("America/Los_Angeles")  # bucket/display in the athlete's zone
 
+# Bound the list endpoints so they can't return an unbounded history as data
+# accumulates over a season (newest-first, so the default covers the dashboard).
+DEFAULT_LIST_LIMIT = 200
+MAX_LIST_LIMIT = 1000
+
+
+def _clamp_limit(limit: int) -> int:
+    return max(1, min(limit, MAX_LIST_LIMIT))
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -214,10 +223,13 @@ def _store_samples(db: Session, payload: schemas.HealthSync, aid: int) -> None:
 
 
 def _stripped_payload(payload: schemas.HealthSync) -> dict:
-    """The sync payload minus the bulk streams now held (deduped) in the typed
-    tables — keeps the syncs row small instead of duplicating ~15 MB per upload."""
+    """The sync payload minus the bulk sample streams — keeps the syncs row small
+    instead of re-storing them on every overlapping upload. Strips ALL numeric
+    streams (HR + speed/HRV/SpO2/etc.) and every interval stream; the ones we
+    query live in the typed tables, and per-workout copies are sliced onto each
+    Workout.raw_payload at ingest (not read back from here)."""
     data = payload.model_dump(mode="json")
-    for key in ("heart_rate_samples", *_INTERVAL_STREAM_FIELDS.keys()):
+    for key in (*_NUMERIC_STREAMS, *_INTERVAL_STREAM_FIELDS.keys()):
         data.pop(key, None)
     return data
 
@@ -269,6 +281,52 @@ def _overlaps(a_start, a_end, b_start, b_end) -> bool:
     return a_start < b_end and b_start < a_end
 
 
+def _slice_from_memory(hr_samples, step_samples, distance_samples, start, end) -> dict:
+    """Build a detected session's HR/step/distance slice from already-loaded
+    in-memory sample lists, instead of re-querying per session. Same shape as
+    _slice_session_from_tables; half-open [start, end) window."""
+    sliced: dict[str, list] = {}
+    hr = sorted((s for s in hr_samples if start <= s["time"] < end),
+                key=lambda s: s["time"])
+    if hr:
+        sliced["heart_rate_samples"] = [
+            {"time": s["time"].isoformat(), "value": s["value"], "source": s["source"]}
+            for s in hr]
+    for label, lst in (("step", step_samples), ("distance", distance_samples)):
+        rows = sorted((s for s in lst if start <= s["start"] < end),
+                      key=lambda s: s["start"])
+        if rows:
+            sliced[f"{label}_samples"] = [
+                {"start": s["start"].isoformat(), "end": s["end"].isoformat(),
+                 "value": s["value"], "source": s["source"]} for s in rows]
+    return sliced
+
+
+def _write_detected_session(db: Session, athlete_id: int, s, workouts, sliced) -> None:
+    """Insert one DetectedSession, matched to the first overlapping workout."""
+    match = next((w for w in workouts
+                  if _overlaps(s.start, s.end, w.start_time, w.end_time)), None)
+    db.add(DetectedSession(
+        athlete_id=athlete_id,
+        sync_id=0,  # detection spans all syncs, not tied to one
+        start_time=s.start,
+        end_time=s.end,
+        duration_seconds=s.duration_seconds,
+        peak_hr=s.peak_hr,
+        avg_hr=s.avg_hr,
+        total_steps=s.total_steps,
+        avg_steps_per_min=s.avg_steps_per_min,
+        total_distance_meters=s.total_distance_meters,
+        inferred_activity=s.inferred_activity,
+        matched_workout_uuid=match.source_uuid if match else None,
+        matched_activity_type=match.activity_type if match else None,
+        hr_coverage_pct=s.hr_coverage_pct,
+        hr_source_count=s.hr_source_count,
+        detection_version=DETECTION_VERSION,
+        raw_payload=sliced,
+    ))
+
+
 def run_detection_for_athlete(db: Session, athlete_id: int) -> int:
     """Detect sessions from the athlete's deduped samples (across all syncs) and
     replace their detected_sessions. Caller commits."""
@@ -279,9 +337,10 @@ def run_detection_for_athlete(db: Session, athlete_id: int) -> int:
             .where(HeartRateSample.athlete_id == athlete_id))]
     def interval_stream(stream: str):
         return [
-            {"start": st, "value": v, "source": src}
-            for st, v, src in db.execute(
-                select(IntervalSample.start_time, IntervalSample.value, IntervalSample.source)
+            {"start": st, "end": et, "value": v, "source": src}
+            for st, et, v, src in db.execute(
+                select(IntervalSample.start_time, IntervalSample.end_time,
+                       IntervalSample.value, IntervalSample.source)
                 .where(IntervalSample.athlete_id == athlete_id,
                        IntervalSample.stream == stream))]
 
@@ -295,33 +354,14 @@ def run_detection_for_athlete(db: Session, athlete_id: int) -> int:
     db.execute(delete(DetectedSession)
                .where(DetectedSession.athlete_id == athlete_id))
 
-    def write_session(s):
-        match = next(
-            (w for w in workouts
-             if _overlaps(s.start, s.end, w.start_time, w.end_time)), None)
-        sliced = _slice_session_from_tables(db, athlete_id, s.start, s.end)
-        db.add(DetectedSession(
-            athlete_id=athlete_id,
-            sync_id=0,  # detection now spans all syncs, not tied to one
-            start_time=s.start,
-            end_time=s.end,
-            duration_seconds=s.duration_seconds,
-            peak_hr=s.peak_hr,
-            avg_hr=s.avg_hr,
-            total_steps=s.total_steps,
-            avg_steps_per_min=s.avg_steps_per_min,
-            total_distance_meters=s.total_distance_meters,
-            inferred_activity=s.inferred_activity,
-            matched_workout_uuid=match.source_uuid if match else None,
-            matched_activity_type=match.activity_type if match else None,
-            hr_coverage_pct=s.hr_coverage_pct,
-            hr_source_count=s.hr_source_count,
-            detection_version=DETECTION_VERSION,
-            raw_payload=sliced,
-        ))
+    def write(s):
+        # Slice from the already-loaded streams, not a per-session re-query.
+        sliced = _slice_from_memory(hr_samples, step_samples, distance_samples,
+                                    s.start, s.end)
+        _write_detected_session(db, athlete_id, s, workouts, sliced)
 
     for s in sessions:
-        write_session(s)
+        write(s)
 
     # DIY GPS routes are explicit, user-started workouts, so each one ALWAYS
     # becomes a session (the HR heuristic skips easy efforts). Skip a route that
@@ -329,17 +369,54 @@ def run_detection_for_athlete(db: Session, athlete_id: int) -> int:
     # route attaches to it via /sessions/{id}/route.
     routes = db.scalars(
         select(RouteTrack).where(RouteTrack.athlete_id == athlete_id)).all()
+    extra = 0
     for r in routes:
         if any(_overlaps(r.start_time, r.end_time, s.start, s.end) for s in sessions):
             continue
         rs = session_from_route(r.start_time, r.end_time, hr_samples,
                                 step_samples, distance_meters=r.distance_meters)
-        write_session(rs)
+        write(rs)
+        extra += 1
 
-    return len(sessions) + sum(
-        1 for r in routes
-        if not any(_overlaps(r.start_time, r.end_time, s.start, s.end)
-                   for s in sessions))
+    return len(sessions) + extra
+
+
+def _ensure_route_session(db: Session, athlete_id: int, route: RouteTrack) -> None:
+    """Ensure a single DIY route has a detected session WITHOUT re-running full
+    detection (which would reload the athlete's entire HR history). Idempotent for
+    the same route window. Full route-vs-HR reconciliation across all data still
+    happens on the next /workouts ingest or POST /detect."""
+    start, end = route.start_time, route.end_time
+    existing = db.scalars(select(DetectedSession)
+                          .where(DetectedSession.athlete_id == athlete_id)).all()
+    # Drop this route's own prior session (a re-upload of the same window) so it
+    # isn't duplicated; keep the rest to test for coverage below.
+    others = []
+    for s in existing:
+        if s.start_time == start and s.end_time == end:
+            db.delete(s)
+        else:
+            others.append(s)
+    # If another session already covers this window (e.g. an HR-detected one), it
+    # represents the run; the route attaches to it via /sessions/{id}/route.
+    if any(_overlaps(start, end, s.start_time, s.end_time) for s in others):
+        return
+    # Build the session from just this window — bounded queries, not full history.
+    hr_win = [{"time": t, "value": b, "source": src} for t, b, src in db.execute(
+        select(HeartRateSample.time, HeartRateSample.bpm, HeartRateSample.source)
+        .where(HeartRateSample.athlete_id == athlete_id,
+               HeartRateSample.time >= start, HeartRateSample.time < end))]
+    step_win = [{"start": st, "value": v, "source": src} for st, v, src in db.execute(
+        select(IntervalSample.start_time, IntervalSample.value, IntervalSample.source)
+        .where(IntervalSample.athlete_id == athlete_id, IntervalSample.stream == "step",
+               IntervalSample.start_time >= start, IntervalSample.start_time < end))]
+    rs = session_from_route(start, end, hr_win, step_win,
+                            distance_meters=route.distance_meters)
+    workouts = db.scalars(select(Workout).where(
+        Workout.athlete_id == athlete_id,
+        Workout.start_time < end, Workout.end_time > start)).all()
+    sliced = _slice_session_from_tables(db, athlete_id, start, end)
+    _write_detected_session(db, athlete_id, rs, workouts, sliced)
 
 
 @app.post("/workouts", status_code=201)
@@ -422,7 +499,7 @@ def ingest_sync(payload: schemas.HealthSync,
 
 
 @app.get("/workouts", response_model=list[schemas.WorkoutSummary])
-def list_workouts(athlete_id: int | None = None,
+def list_workouts(athlete_id: int | None = None, limit: int = DEFAULT_LIST_LIMIT,
                   current: Athlete = Depends(get_current_athlete),
                   db: Session = Depends(get_db)):
     athlete_id = _scope_athlete(current, athlete_id)
@@ -435,7 +512,7 @@ def list_workouts(athlete_id: int | None = None,
     )
     if athlete_id is not None:
         query = query.where(Workout.athlete_id == athlete_id)
-    return db.scalars(query).all()
+    return db.scalars(query.limit(_clamp_limit(limit))).all()
 
 
 def _pacific_date(dt) -> date:
@@ -559,14 +636,14 @@ def redetect(athlete_id: int | None = None,
 
 
 @app.get("/sessions", response_model=list[schemas.SessionSummary])
-def list_sessions(athlete_id: int | None = None,
+def list_sessions(athlete_id: int | None = None, limit: int = DEFAULT_LIST_LIMIT,
                   current: Athlete = Depends(get_current_athlete),
                   db: Session = Depends(get_db)):
     athlete_id = _scope_athlete(current, athlete_id)
     query = select(DetectedSession).order_by(DetectedSession.start_time.desc())
     if athlete_id is not None:
         query = query.where(DetectedSession.athlete_id == athlete_id)
-    return db.scalars(query).all()
+    return db.scalars(query.limit(_clamp_limit(limit))).all()
 
 
 @app.get("/sessions/{session_id}", response_model=schemas.SessionDetail)
@@ -627,15 +704,20 @@ def ingest_route(payload: schemas.RouteTrack,
     db.execute(stmt)
     db.commit()
 
-    # A DIY route always becomes a session so it's visible on the dashboard with
-    # its map — re-run detection (which now folds routes in) for this athlete.
-    run_detection_for_athlete(db, aid)
-    db.commit()
+    # A DIY route always becomes a session so it's visible with its map. Do it
+    # incrementally for just this route's window — re-running full detection here
+    # would reload the athlete's entire HR history on every upload. (db.get may
+    # return a row owned by someone else if a foreign-key collision was blocked
+    # by the upsert guard above; only build a session for our own row.)
+    route = db.get(RouteTrack, crid)
+    if route is not None and route.athlete_id == aid:
+        _ensure_route_session(db, aid, route)
+        db.commit()
     return {"client_route_id": crid, "received_points": len(payload.points)}
 
 
 @app.get("/routes", response_model=list[schemas.RouteSummary])
-def list_routes(athlete_id: int | None = None,
+def list_routes(athlete_id: int | None = None, limit: int = DEFAULT_LIST_LIMIT,
                 current: Athlete = Depends(get_current_athlete),
                 db: Session = Depends(get_db)):
     athlete_id = _scope_athlete(current, athlete_id)
@@ -647,7 +729,7 @@ def list_routes(athlete_id: int | None = None,
              .order_by(RouteTrack.start_time.desc()))
     if athlete_id is not None:
         query = query.where(RouteTrack.athlete_id == athlete_id)
-    return db.scalars(query).all()
+    return db.scalars(query.limit(_clamp_limit(limit))).all()
 
 
 def _route_to_detail(route: RouteTrack) -> schemas.RouteDetail:
@@ -682,10 +764,13 @@ def get_session_route(session_id: int,
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
     authorize_athlete_access(current, session.athlete_id)
-    routes = db.scalars(select(RouteTrack).where(
-        RouteTrack.athlete_id == session.athlete_id)).all()
-    match = next((r for r in routes if _overlaps(
-        session.start_time, session.end_time, r.start_time, r.end_time)), None)
+    # Find the overlapping route in SQL (indexed) and fetch only that one row's
+    # payload, instead of loading every route's full GPS points to scan in Python.
+    match = db.scalars(select(RouteTrack).where(
+        RouteTrack.athlete_id == session.athlete_id,
+        RouteTrack.start_time < session.end_time,
+        RouteTrack.end_time > session.start_time)
+        .order_by(RouteTrack.start_time).limit(1)).first()
     return _route_to_detail(match) if match else None
 
 
