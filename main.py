@@ -273,7 +273,7 @@ def _slice_session_from_tables(db: Session, athlete_id: int, start, end) -> dict
                    IntervalSample.value, IntervalSample.source)
             .where(IntervalSample.athlete_id == athlete_id,
                    IntervalSample.stream == label,
-                   IntervalSample.start_time >= start, IntervalSample.start_time <= end)
+                   IntervalSample.start_time >= start, IntervalSample.start_time < end)
             .order_by(IntervalSample.start_time)).all()
         if rows:
             sliced[f"{label}_samples"] = [
@@ -307,10 +307,18 @@ def _slice_from_memory(hr_samples, step_samples, distance_samples, start, end) -
     return sliced
 
 
-def _write_detected_session(db: Session, athlete_id: int, s, workouts, sliced) -> None:
-    """Insert one DetectedSession, matched to the first overlapping workout."""
+def _write_detected_session(db: Session, athlete_id: int, s, workouts, sliced,
+                            consumed: set | None = None) -> None:
+    """Insert one DetectedSession, matched to the first overlapping workout.
+
+    With `consumed`, matching is one-to-one: a workout already claimed by an
+    earlier session isn't matched again, so two detected sessions that overlap
+    the same recorded workout don't both suppress-and-recount it."""
     match = next((w for w in workouts
-                  if _overlaps(s.start, s.end, w.start_time, w.end_time)), None)
+                  if (consumed is None or w.source_uuid not in consumed)
+                  and _overlaps(s.start, s.end, w.start_time, w.end_time)), None)
+    if match is not None and consumed is not None:
+        consumed.add(match.source_uuid)
     db.add(DetectedSession(
         athlete_id=athlete_id,
         sync_id=0,  # detection spans all syncs, not tied to one
@@ -359,11 +367,13 @@ def run_detection_for_athlete(db: Session, athlete_id: int) -> int:
     db.execute(delete(DetectedSession)
                .where(DetectedSession.athlete_id == athlete_id))
 
+    consumed: set = set()  # workouts already claimed, so matching is one-to-one
+
     def write(s):
         # Slice from the already-loaded streams, not a per-session re-query.
         sliced = _slice_from_memory(hr_samples, step_samples, distance_samples,
                                     s.start, s.end)
-        _write_detected_session(db, athlete_id, s, workouts, sliced)
+        _write_detected_session(db, athlete_id, s, workouts, sliced, consumed)
 
     for s in sessions:
         write(s)
@@ -441,9 +451,11 @@ def ingest_sync(payload: schemas.HealthSync,
     #    deduped, in the typed tables instead of being copied here every upload).
     sync = Sync(
         athlete_id=aid,
-        uploaded_at=payload.uploaded_at,
-        window_start=payload.window_start,
-        window_end=payload.window_end,
+        # Normalize to naive UTC like the sample tables, so all stored times are
+        # comparable regardless of the client's offset (the wire format is UTC).
+        uploaded_at=parse_utc(payload.uploaded_at),
+        window_start=parse_utc(payload.window_start),
+        window_end=parse_utc(payload.window_end),
         client_version=payload.client_version,
         source_platform=payload.source_platform,
         raw_payload=_stripped_payload(payload),
@@ -467,8 +479,8 @@ def ingest_sync(payload: schemas.HealthSync,
             "source_app": w.source_app,
             "activity_type": w.activity_type,
             "recording_method": w.recording_method,
-            "start_time": w.start_time,
-            "end_time": w.end_time,
+            "start_time": parse_utc(w.start_time),
+            "end_time": parse_utc(w.end_time),
             "duration_seconds": w.duration_seconds,
             "total_distance_meters": _round_or_none(w.total_distance_meters),
             "total_energy_kcal": _round_or_none(w.total_energy_kcal),
@@ -476,7 +488,7 @@ def ingest_sync(payload: schemas.HealthSync,
             "avg_heart_rate": round(sum(hr_vals) / len(hr_vals)) if hr_vals else None,
             "max_heart_rate": round(max(hr_vals)) if hr_vals else None,
             "raw_payload": sliced,
-            "uploaded_at": payload.uploaded_at,
+            "uploaded_at": parse_utc(payload.uploaded_at),
             "client_version": payload.client_version,
         }
 
@@ -675,9 +687,10 @@ def get_session(session_id: int,
                 current: Athlete = Depends(get_current_athlete),
                 db: Session = Depends(get_db)):
     session = db.get(DetectedSession, session_id)
-    if session is None:
+    # 404 (not 403) for a foreign session too: sessions use a sequential integer
+    # id, so distinct 403/404 would let a non-coach enumerate others' sessions.
+    if session is None or (current.role != "coach" and session.athlete_id != current.id):
         raise HTTPException(status_code=404, detail="Session not found")
-    authorize_athlete_access(current, session.athlete_id)
     return session
 
 
@@ -706,8 +719,8 @@ def ingest_route(payload: schemas.RouteTrack,
         "client_route_id": crid,
         "athlete_id": aid,
         "source": payload.source,
-        "start_time": payload.start_time,
-        "end_time": payload.end_time,
+        "start_time": parse_utc(payload.start_time),
+        "end_time": parse_utc(payload.end_time),
         "duration_seconds": payload.duration_seconds,
         "distance_meters": payload.distance_meters,
         "point_count": payload.point_count,
@@ -785,17 +798,21 @@ def get_session_route(session_id: int,
     """The DIY route whose time window overlaps this detected session (the GPS
     path for the session detail map), or null if none. Reconciled at read time."""
     session = db.get(DetectedSession, session_id)
-    if session is None:
+    if session is None or (current.role != "coach" and session.athlete_id != current.id):
         raise HTTPException(status_code=404, detail="Session not found")
-    authorize_athlete_access(current, session.athlete_id)
-    # Find the overlapping route in SQL (indexed) and fetch only that one row's
-    # payload, instead of loading every route's full GPS points to scan in Python.
-    match = db.scalars(select(RouteTrack).where(
-        RouteTrack.athlete_id == session.athlete_id,
-        RouteTrack.start_time < session.end_time,
-        RouteTrack.end_time > session.start_time)
-        .order_by(RouteTrack.start_time).limit(1)).first()
-    return _route_to_detail(match) if match else None
+    # Find overlapping routes by window only (no raw_payload), pick the one with
+    # the most temporal overlap, then load just that one row's GPS points — so we
+    # neither scan every route's payload nor return an arbitrary overlap.
+    candidates = db.execute(
+        select(RouteTrack.client_route_id, RouteTrack.start_time, RouteTrack.end_time)
+        .where(RouteTrack.athlete_id == session.athlete_id,
+               RouteTrack.start_time < session.end_time,
+               RouteTrack.end_time > session.start_time)).all()
+    if not candidates:
+        return None
+    best = max(candidates, key=lambda c:
+               min(session.end_time, c.end_time) - max(session.start_time, c.start_time))
+    return _route_to_detail(db.get(RouteTrack, best.client_route_id))
 
 
 class NoCacheStaticFiles(StaticFiles):

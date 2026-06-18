@@ -20,9 +20,10 @@ from sqlalchemy import func, select, update  # noqa: E402
 
 from database import SessionLocal  # noqa: E402
 from models import (Athlete, DetectedSession, HeartRateSample,  # noqa: E402
-                    IntervalSample, Sync, Workout)
+                    IntervalSample, RouteTrack, Sync, Workout)
 
-DATA_TABLES = [Sync, Workout, HeartRateSample, IntervalSample, DetectedSession]
+DATA_TABLES = [Sync, Workout, HeartRateSample, IntervalSample, DetectedSession,
+               RouteTrack]
 
 
 def main() -> None:

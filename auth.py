@@ -98,7 +98,19 @@ def get_or_create_athlete_for_identity(
         AuthIdentity.provider == provider,
         AuthIdentity.provider_user_id == provider_user_id))
     if identity is not None:
-        return db.get(Athlete, identity.athlete_id)
+        athlete = db.get(Athlete, identity.athlete_id)
+        if athlete is not None:
+            return athlete
+        # Orphaned identity (its athlete row was deleted): recreate the athlete
+        # and re-point the identity, rather than returning None -> 500 on sign-in.
+        athlete = Athlete(name=name or email or "New athlete", email=email,
+                          role="athlete")
+        db.add(athlete)
+        db.flush()
+        identity.athlete_id = athlete.id
+        db.commit()
+        db.refresh(athlete)
+        return athlete
 
     athlete = Athlete(name=name or email or "New athlete", email=email,
                       role="athlete")

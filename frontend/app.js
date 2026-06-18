@@ -169,16 +169,33 @@ function renderWeeklyChart(weeks) {
 async function loadDashboard(athleteId) {
   document.getElementById("rosterView").hidden = true;
   document.getElementById("dashView").hidden = false;
+  const err = document.getElementById("dashError");
+  err.hidden = true;
   const qs = athleteId != null ? `?athlete_id=${athleteId}` : "";
-  const [summary, sessions, workouts, weeks] = await Promise.all([
-    getJSONAuth("/stats/summary" + qs),
-    getJSONAuth("/sessions" + qs),
-    getJSONAuth("/workouts" + qs),
-    getJSONAuth("/stats/weekly" + qs),
-  ]);
-  renderSummary(summary);
-  renderRecent(buildRecent(sessions, workouts));
-  renderWeeklyChart(weeks);
+  try {
+    const [summary, sessions, workouts, weeks] = await Promise.all([
+      getJSONAuth("/stats/summary" + qs),
+      getJSONAuth("/sessions" + qs),
+      getJSONAuth("/workouts" + qs),
+      getJSONAuth("/stats/weekly" + qs),
+    ]);
+    renderSummary(summary);
+    renderRecent(buildRecent(sessions, workouts));
+    renderWeeklyChart(weeks);
+  } catch (e) {
+    if (e && e.message === "unauthenticated") return;  // 401 already handled
+    console.error("Failed to load dashboard:", e);
+    // Clear stale (previous-athlete) data so it can't be mistaken for current.
+    ["wkDistance", "wkTime", "wkRuns"].forEach(
+      (id) => (document.getElementById(id).textContent = "—"));
+    ["wkDistanceDelta", "wkTimeDelta", "wkRunsDelta"].forEach(
+      (id) => setDelta(id, 0, ""));
+    document.querySelector("#recentTable tbody").innerHTML =
+      `<tr><td colspan="6" class="muted">—</td></tr>`;
+    renderWeeklyChart([]);
+    err.textContent = "Couldn't load this athlete's data — please try again.";
+    err.hidden = false;
+  }
 }
 
 async function showRoster() {

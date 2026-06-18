@@ -102,7 +102,10 @@ def session_from_route(start, end, hr_samples, step_samples,
     """
     start, end = parse_utc(start), parse_utc(end)
     duration_s = (end - start).total_seconds()
-    duration_min = duration_s / 60 or 1
+    # Whole minutes (>=1), matching how detect_sessions computes cadence — steps
+    # bucket into whole minutes, so a fractional denominator inflates spm for
+    # short/non-minute-aligned routes and can misclassify a walk as a run.
+    minutes = max(round(duration_s / 60), 1)
 
     hr_by_min: dict[datetime, list[float]] = {}
     sources: set = set()
@@ -120,14 +123,13 @@ def session_from_route(start, end, hr_samples, step_samples,
     steps_by_min = _minute_max_from_primary_source(
         [s for s in step_samples if start <= parse_utc(s["start"]) < end])
     total_steps = sum(steps_by_min.values())
-    avg_spm = total_steps / duration_min if duration_min else 0
+    avg_spm = total_steps / minutes
 
     if distance_meters and duration_s:
         activity = "RUNNING" if distance_meters / duration_s >= RUN_SPEED_MPS else "WALKING"
     else:
         activity = "RUNNING" if avg_spm >= RUN_CADENCE_SPM else "WALKING"
 
-    minutes = int(duration_min) or 1
     coverage = min(len(hr_by_min) / minutes * 100, 100.0)
 
     return Session(

@@ -254,6 +254,16 @@ tbody tr.clickable { cursor: pointer; }
 
 /* --- route map (session.html) ------------------------------------------ */
 
+.dash-error {
+  margin: 0;
+  padding: 12px 16px;
+  border-radius: 10px;
+  background: var(--down-bg);
+  color: var(--down-ink);
+  font-size: 14px;
+  font-weight: 600;
+}
+
 .map-wrap { position: relative; }
 #routeMap {
   height: 360px;
