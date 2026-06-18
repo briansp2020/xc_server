@@ -38,9 +38,12 @@ class Workout(BaseModel):
     start_time: datetime
     end_time: datetime
     duration_seconds: int
-    total_distance_meters: int | None = None
-    total_energy_kcal: int | None = None
-    total_steps: int | None = None
+    # Accept floats on the wire: Health Connect distances/energies are often
+    # fractional, and Pydantic would otherwise 422 the WHOLE sync over one
+    # fractional value. Stored rounded to int at ingest (see _round_or_none).
+    total_distance_meters: float | None = None
+    total_energy_kcal: float | None = None
+    total_steps: float | None = None
 
 
 class TrackPoint(BaseModel):

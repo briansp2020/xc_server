@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from statistics import mean, median
 
-DETECTION_VERSION = "v2"  # v2: HR-driven continuity + session-level cadence gate
+DETECTION_VERSION = "v3"  # v3: per-window primary step/distance source (was global)
 
 # Tunable thresholds — see the schema doc "Tuning notes".
 RESTING_HR = 60          # per-athlete eventually; fixed default for now
@@ -44,13 +44,6 @@ def parse_utc(value) -> datetime:
 
 def _floor_minute(dt: datetime) -> datetime:
     return dt.replace(second=0, microsecond=0)
-
-
-def _minute_range(start: datetime, end: datetime):
-    m = start
-    while m < end:
-        yield m
-        m += timedelta(minutes=1)
 
 
 @dataclass
@@ -175,10 +168,13 @@ def detect_sessions(hr_samples, step_samples, distance_samples=None,
         if s.get("source"):
             src_by_min.setdefault(m, set()).add(s["source"])
 
-    # Steps and distance both arrive from multiple overlapping sources; collapse
-    # each to one value per minute from a single primary source (see helper).
-    steps_by_min = _minute_max_from_primary_source(step_samples)
-    distance_by_min = _minute_max_from_primary_source(distance_samples or [])
+    # Steps and distance arrive from multiple overlapping sources. They're
+    # collapsed to one primary source PER SESSION WINDOW below (step 4), not once
+    # globally: a globally-chosen primary can miss a window where that source
+    # wasn't recording (e.g. the wrist tracker was charging), which would zero a
+    # real session's cadence and drop it. Pre-parse the timestamps once.
+    step_parsed = [(parse_utc(s["start"]), s) for s in step_samples]
+    dist_parsed = [(parse_utc(s["start"]), s) for s in (distance_samples or [])]
 
     # 2. Active minutes: elevated HR only. HR is continuous and reliable, so it
     #    drives session continuity; cadence is validated per session (step 5) to
@@ -207,13 +203,19 @@ def detect_sessions(hr_samples, step_samples, distance_samples=None,
         if duration_min < MIN_SESSION_MIN:
             continue
 
-        window = list(_minute_range(start, end))
-        total_steps = sum(steps_by_min.get(m, 0) for m in window)
+        # Per-window primary source (the source with the most records in THIS
+        # window), per-minute max — dedups overlapping sources without letting a
+        # globally-dominant-but-absent source zero out this window.
+        steps_by_min = _minute_max_from_primary_source(
+            [s for t, s in step_parsed if start <= t < end])
+        total_steps = sum(steps_by_min.values())
         avg_spm = total_steps / duration_min if duration_min else 0
         if avg_spm < MIN_AVG_CADENCE_SPM:
             continue  # elevated HR but no sustained movement -> not exercise
 
-        total_distance = sum(distance_by_min.get(m, 0) for m in window)
+        distance_by_min = _minute_max_from_primary_source(
+            [s for t, s in dist_parsed if start <= t < end])
+        total_distance = sum(distance_by_min.values())
 
         win_minutes = [m for m in hr_by_min if start <= m < end]
         hr_meds = [median(hr_by_min[m]) for m in win_minutes]

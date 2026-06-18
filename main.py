@@ -34,6 +34,11 @@ def _clamp_limit(limit: int) -> int:
     return max(1, min(limit, MAX_LIST_LIMIT))
 
 
+def _round_or_none(value: float | None) -> int | None:
+    """Round a wire value to the int the DB column stores (None stays None)."""
+    return round(value) if value is not None else None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Runs once on startup: create any tables that don't exist yet.
@@ -368,14 +373,19 @@ def run_detection_for_athlete(db: Session, athlete_id: int) -> int:
     # already overlaps an HR-detected session — that session covers it and the
     # route attaches to it via /sessions/{id}/route.
     routes = db.scalars(
-        select(RouteTrack).where(RouteTrack.athlete_id == athlete_id)).all()
+        select(RouteTrack).where(RouteTrack.athlete_id == athlete_id)
+        .order_by(RouteTrack.start_time)).all()
+    route_windows: list[tuple] = []
     extra = 0
     for r in routes:
         if any(_overlaps(r.start_time, r.end_time, s.start, s.end) for s in sessions):
-            continue
+            continue  # an HR-detected session already covers this route
+        if any(_overlaps(r.start_time, r.end_time, a, b) for a, b in route_windows):
+            continue  # an earlier route already made a session for this window
         rs = session_from_route(r.start_time, r.end_time, hr_samples,
                                 step_samples, distance_meters=r.distance_meters)
         write(rs)
+        route_windows.append((r.start_time, r.end_time))
         extra += 1
 
     return len(sessions) + extra
@@ -460,9 +470,9 @@ def ingest_sync(payload: schemas.HealthSync,
             "start_time": w.start_time,
             "end_time": w.end_time,
             "duration_seconds": w.duration_seconds,
-            "total_distance_meters": w.total_distance_meters,
-            "total_energy_kcal": w.total_energy_kcal,
-            "total_steps": w.total_steps,
+            "total_distance_meters": _round_or_none(w.total_distance_meters),
+            "total_energy_kcal": _round_or_none(w.total_energy_kcal),
+            "total_steps": _round_or_none(w.total_steps),
             "avg_heart_rate": round(sum(hr_vals) / len(hr_vals)) if hr_vals else None,
             "max_heart_rate": round(max(hr_vals)) if hr_vals else None,
             "raw_payload": sliced,
@@ -536,12 +546,21 @@ def _activity_entries(db: Session, athlete_id: int | None):
         sq = sq.where(DetectedSession.athlete_id == athlete_id)
         wq = wq.where(Workout.athlete_id == athlete_id)
 
+    workouts = {uuid: (start, dur, dist, act)
+                for uuid, start, dur, dist, act in db.execute(wq)}
+
     entries, matched = [], set()
     for start, dur, dist, m_act, i_act, m_uuid in db.execute(sq):
-        entries.append((start, dur, dist, m_act or i_act))
-        if m_uuid:
+        if m_uuid in workouts:
+            _, w_dur, w_dist, _ = workouts[m_uuid]
+            # The recorded workout carries the real distance/duration; fall back
+            # to it when the detected session lacks one (e.g. its distance source
+            # was dropped by dedup) so a recorded run isn't counted as 0 km.
+            dist = dist or w_dist
+            dur = dur or w_dur
             matched.add(m_uuid)
-    for uuid, start, dur, dist, act in db.execute(wq):
+        entries.append((start, dur, dist, m_act or i_act))
+    for uuid, (start, dur, dist, act) in workouts.items():
         if uuid not in matched:
             entries.append((start, dur, dist, act))
     return entries
@@ -624,12 +643,17 @@ def redetect(athlete_id: int | None = None,
     Athletes reprocess themselves; coaches may pass any athlete_id (or none
     for everyone)."""
     athlete_id = _scope_athlete(current, athlete_id)
-    q = select(HeartRateSample.athlete_id).distinct()
     if athlete_id is not None:
-        q = q.where(HeartRateSample.athlete_id == athlete_id)
+        ids = [athlete_id]  # run unconditionally — a route-only athlete has no HR rows
+    else:
+        # Sweep everyone with data: union HR + route athletes (a route-only
+        # athlete has detected sessions but no heart_rate_samples).
+        ids = sorted(
+            {a for (a,) in db.execute(select(HeartRateSample.athlete_id).distinct())}
+            | {a for (a,) in db.execute(select(RouteTrack.athlete_id).distinct())})
 
     results: dict[int, int] = {}
-    for (aid,) in db.execute(q):
+    for aid in ids:
         results[aid] = run_detection_for_athlete(db, aid)
     db.commit()
     return {"detection_version": DETECTION_VERSION, "detected_per_athlete": results}
