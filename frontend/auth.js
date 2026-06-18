@@ -8,6 +8,16 @@ let _token = localStorage.getItem(TOKEN_KEY);
 
 function getToken() { return _token; }
 
+// Escape server-supplied strings (athlete names, Health Connect activity types,
+// etc.) before they go into any innerHTML template. Without this, a crafted
+// value is stored XSS — and since the JWT lives in localStorage, that means
+// token theft. Shared by every page (auth.js loads before each page's script).
+function escapeHtml(value) {
+  return String(value == null ? "" : value).replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  })[c]);
+}
+
 function setToken(t) {
   _token = t;
   if (t) localStorage.setItem(TOKEN_KEY, t);

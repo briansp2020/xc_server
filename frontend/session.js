@@ -44,13 +44,13 @@ const stat = (label, value) =>
 
 function renderHeader(s) {
   const recorded = !!s.matched_workout_uuid;
-  const activity = s.matched_activity_type || s.inferred_activity || "Session";
+  const activity = escapeHtml(s.matched_activity_type || s.inferred_activity || "Session");
   const badge = recorded
     ? `<span class="badge badge-recorded">recorded</span>`
     : `<span class="badge badge-detected">detected</span>`;
   document.getElementById("detail").innerHTML = `
     <h2 class="detail-title">${activity} ${badge}</h2>
-    <p class="detail-sub">${fmtDateTime(s.start_time)} · detection ${s.detection_version}</p>
+    <p class="detail-sub">${fmtDateTime(s.start_time)} · detection ${escapeHtml(s.detection_version)}</p>
     <div class="stats">
       ${stat("Duration", fmtDuration(s.duration_seconds))}
       ${stat("Distance", fmtKm(s.total_distance_meters))}

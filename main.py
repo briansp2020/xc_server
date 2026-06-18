@@ -178,6 +178,10 @@ def _store_samples(db: Session, payload: schemas.HealthSync, aid: int) -> None:
             index_elements=["uuid", "time"],
             set_={c: getattr(stmt.excluded, c)
                   for c in ("athlete_id", "bpm", "source", "recording_method")},
+            # The key (uuid, time) is global, not athlete-scoped, so without this
+            # guard one athlete could overwrite (and re-own) another's sample by
+            # reusing its key. Only update a row that already belongs to us.
+            where=HeartRateSample.athlete_id == aid,
         )
         db.execute(stmt, list(hr_rows.values()))
 
@@ -203,6 +207,8 @@ def _store_samples(db: Session, payload: schemas.HealthSync, aid: int) -> None:
             set_={c: getattr(stmt.excluded, c)
                   for c in ("athlete_id", "end_time", "value", "unit",
                             "source", "recording_method")},
+            # Global key — guard against cross-athlete overwrite (see HR above).
+            where=IntervalSample.athlete_id == aid,
         )
         db.execute(stmt, list(iv_rows.values()))
 
@@ -393,6 +399,10 @@ def ingest_sync(payload: schemas.HealthSync,
         stmt = stmt.on_conflict_do_update(
             index_elements=[Workout.source_uuid],
             set_={col: getattr(stmt.excluded, col) for col in _UPSERT_COLUMNS},
+            # source_uuid is a global key; without this an athlete could overwrite
+            # and re-own another athlete's workout by reusing its uuid (which is
+            # visible to coaches via GET /workouts). Only update our own rows.
+            where=Workout.athlete_id == aid,
         )
         db.execute(stmt)
 
@@ -606,12 +616,13 @@ def ingest_route(payload: schemas.RouteTrack,
     stmt = sqlite_insert(RouteTrack).values(row)
     stmt = stmt.on_conflict_do_update(
         index_elements=[RouteTrack.client_route_id],
-        # Re-key to the uploading athlete too, so a route can't be silently
-        # overwritten under someone else's id (client_route_id is a UUID, so a
-        # cross-athlete collision shouldn't happen — this just makes it safe).
         set_={c: row[c] for c in (
             "athlete_id", "source", "start_time", "end_time", "duration_seconds",
             "distance_meters", "point_count", "uploaded_at", "raw_payload")},
+        # client_route_id is client-supplied and a global key, so without this an
+        # athlete could overwrite another's route by reusing its id. Only update
+        # a row we already own; a conflicting foreign row is left untouched.
+        where=RouteTrack.athlete_id == aid,
     )
     db.execute(stmt)
     db.commit()

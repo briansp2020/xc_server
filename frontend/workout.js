@@ -57,9 +57,9 @@ const stat = (label, value) =>
 
 function renderHeader(w, raw) {
   const sub = [fmtDateTime(w.start_time), w.source_app, w.recording_method]
-    .filter(Boolean).join(" · ");
+    .filter(Boolean).map(escapeHtml).join(" · ");
   document.getElementById("detail").innerHTML = `
-    <h2 class="detail-title">${w.activity_type}</h2>
+    <h2 class="detail-title">${escapeHtml(w.activity_type)}</h2>
     <p class="detail-sub">${sub}</p>
     <div class="stats">
       ${stat("Duration", fmtDuration(w.duration_seconds))}

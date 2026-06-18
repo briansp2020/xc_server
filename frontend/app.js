@@ -119,7 +119,7 @@ function renderRecent(items) {
   tbody.innerHTML = items.map((it) => `
     <tr class="clickable" onclick="location.href='${it.href}'">
       <td>${fmtDate(it.date)}</td>
-      <td>${it.type}</td>
+      <td>${escapeHtml(it.type)}</td>
       <td class="num">${it.duration == null ? "—" : fmtDuration(it.duration)}</td>
       <td class="num">${fmtKm(it.distance)}</td>
       <td class="num">${fmtHr(it.avgHr)}</td>
@@ -191,10 +191,10 @@ async function showRoster() {
     return;
   }
   tbody.innerHTML = athletes.map((a) => `
-    <tr class="clickable" data-id="${a.id}" data-name="${a.name}">
-      <td>${a.name}</td>
-      <td>${a.email || "—"}</td>
-      <td><span class="badge badge-role">${a.role}</span></td>
+    <tr class="clickable" data-id="${a.id}" data-name="${escapeHtml(a.name)}">
+      <td>${escapeHtml(a.name)}</td>
+      <td>${escapeHtml(a.email || "—")}</td>
+      <td><span class="badge badge-role">${escapeHtml(a.role)}</span></td>
       <td class="num">${a.grade ?? "—"}</td>
     </tr>`).join("");
   tbody.querySelectorAll("tr.clickable").forEach((tr) => {
